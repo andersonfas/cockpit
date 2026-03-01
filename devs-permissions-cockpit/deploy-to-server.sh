@@ -10,7 +10,11 @@
 
 set -euo pipefail
 
-R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' B='\033[0;34m' N='\033[0m'
+if [[ -t 1 ]]; then
+    R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' B='\033[0;34m' N='\033[0m'
+else
+    R='' G='' Y='' B='' N=''
+fi
 info()  { echo -e "${G}[INFO]${N} $*"; }
 warn()  { echo -e "${Y}[WARN]${N} $*"; }
 error() { echo -e "${R}[ERRO]${N} $*" >&2; }
@@ -21,7 +25,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 # Verificar Cockpit
-if ! command -v cockpit-bridge &>/dev/null && [[ ! -d "/usr/share/cockpit" ]]; then
+if ! command -v cockpit-bridge &>/dev/null || [[ ! -d "/usr/share/cockpit" ]]; then
     error "Cockpit nao encontrado. Instale primeiro:"
     echo "  sudo dnf install cockpit && sudo systemctl enable --now cockpit.socket"
     exit 1
@@ -29,7 +33,7 @@ fi
 
 info "Extraindo arquivos..."
 WORK_DIR=$(mktemp -d)
-trap "rm -rf $WORK_DIR" EXIT
+trap 'rm -rf "$WORK_DIR"' EXIT
 
 # Payload base64 embutido
 base64 -d << 'PAYLOAD' | tar -xzf - -C "$WORK_DIR"
@@ -39,11 +43,11 @@ PAYLOAD
 cd "$WORK_DIR/devs-permissions-cockpit"
 
 info "Instalando plugin Cockpit..."
-mkdir -p /usr/share/cockpit/devs-permissions-cockpit
-install -m 644 src/manifest.json /usr/share/cockpit/devs-permissions-cockpit/
-install -m 644 src/index.html /usr/share/cockpit/devs-permissions-cockpit/
-install -m 644 src/devs-permissions.js /usr/share/cockpit/devs-permissions-cockpit/
-install -m 644 src/devs-permissions.css /usr/share/cockpit/devs-permissions-cockpit/
+mkdir -p /usr/share/cockpit/devs-permissions
+install -m 644 src/manifest.json /usr/share/cockpit/devs-permissions/
+install -m 644 src/index.html /usr/share/cockpit/devs-permissions/
+install -m 644 src/devs-permissions.js /usr/share/cockpit/devs-permissions/
+install -m 644 src/devs-permissions.css /usr/share/cockpit/devs-permissions/
 
 info "Instalando bridge helper..."
 mkdir -p /usr/libexec/devs-permissions
@@ -51,9 +55,10 @@ install -m 755 bridge/cockpit-helper.sh /usr/libexec/devs-permissions/
 
 info "Criando diretorios de dados..."
 mkdir -p /etc/devs-permissions
-mkdir -p /var/lib/devs_permissions/{temp_access,requests}
-mkdir -p /var/log/devs_audit/sessions
-mkdir -p /var/backups/devs_permissions
+mkdir -p -m 750 /var/lib/devs_permissions/temp_access
+mkdir -p -m 750 /var/lib/devs_permissions/requests
+mkdir -p -m 750 /var/log/devs_audit/sessions
+mkdir -p -m 750 /var/backups/devs_permissions
 
 # Copiar scripts se existem em /root/bin/
 if [[ -f /root/bin/devs_permissions_manager.sh ]]; then
@@ -97,4 +102,4 @@ else
 fi
 
 echo ""
-info "Para desinstalar: rm -rf /usr/share/cockpit/devs-permissions-cockpit /usr/libexec/devs-permissions/cockpit-helper.sh"
+info "Para desinstalar: rm -rf /usr/share/cockpit/devs-permissions /usr/libexec/devs-permissions/cockpit-helper.sh"

@@ -103,7 +103,7 @@ cmd_get_overview() {
 
     local temp_count=0 pending_count=0
     if [[ -d "$TEMP_ACCESS_DIR" ]]; then
-        temp_count=$(find "$TEMP_ACCESS_DIR" -name "*.json" -type f 2>/dev/null | wc -l)
+        temp_count=$(find "$TEMP_ACCESS_DIR" -name "*.expiry" -type f 2>/dev/null | wc -l)
     fi
     if [[ -d "$REQUESTS_DIR" ]]; then
         pending_count=$(find "$REQUESTS_DIR" -name "*.json" -type f 2>/dev/null | while read -r f; do
@@ -222,14 +222,15 @@ cmd_list_users() {
             done <<< "$teams"
         fi
 
-        # Verificar temp access
+        # Verificar temp access (formato: .expiry contém epoch, .reason contém texto)
         local has_temp=false temp_expires="" temp_reason=""
         if [[ -d "$TEMP_ACCESS_DIR" ]]; then
-            local temp_file="${TEMP_ACCESS_DIR}/${user}.json"
-            if [[ -f "$temp_file" ]]; then
+            local expiry_file="${TEMP_ACCESS_DIR}/${user}.expiry"
+            local reason_file="${TEMP_ACCESS_DIR}/${user}.reason"
+            if [[ -f "$expiry_file" ]]; then
                 has_temp=true
-                temp_expires=$(grep -o '"expires_epoch"[[:space:]]*:[[:space:]]*[0-9]*' "$temp_file" 2>/dev/null | grep -o '[0-9]*$' || echo "0")
-                temp_reason=$(grep -o '"reason"[[:space:]]*:[[:space:]]*"[^"]*"' "$temp_file" 2>/dev/null | sed 's/.*"reason"[[:space:]]*:[[:space:]]*"\([^"]*\)"/\1/' || echo "")
+                temp_expires=$(cat "$expiry_file" 2>/dev/null || echo "0")
+                [[ -f "$reason_file" ]] && temp_reason=$(cat "$reason_file" 2>/dev/null || echo "")
             fi
         fi
 
@@ -262,14 +263,19 @@ cmd_list_temp_access() {
     now=$(epoch_now)
 
     if [[ -d "$TEMP_ACCESS_DIR" ]]; then
-        for f in "$TEMP_ACCESS_DIR"/*.json; do
-            [[ -f "$f" ]] || continue
+        for expiry_file in "$TEMP_ACCESS_DIR"/*.expiry; do
+            [[ -f "$expiry_file" ]] || continue
             [[ "$first" != true ]] && json+=","
             first=false
 
-            local content
-            content=$(cat "$f" 2>/dev/null || echo "{}")
-            json+="$content"
+            local user expiry reason=""
+            user=$(basename "$expiry_file" .expiry)
+            expiry=$(cat "$expiry_file" 2>/dev/null || echo "0")
+            local reason_file="${TEMP_ACCESS_DIR}/${user}.reason"
+            [[ -f "$reason_file" ]] && reason=$(cat "$reason_file" 2>/dev/null || echo "")
+
+            local remaining=$(( (expiry - now) / 3600 ))
+            json+="{\"user\":$(json_string "$user"),\"expires_epoch\":$expiry,\"hours_remaining\":$remaining,\"reason\":$(json_string "$reason")}"
         done
     fi
 
@@ -438,12 +444,40 @@ cmd_run_manager() {
         return 1
     fi
 
-    local args=("--force" "--config" "$CONFIG_FILE")
-    args+=("$@")
+    # Sanitiza argumentos: usernames e valores que vão para o manager
+    local sanitized_args=("--force" "--config" "$CONFIG_FILE")
+    local expect_user=false expect_reason=false expect_hours=false
+    for arg in "$@"; do
+        if [[ "$expect_user" == true ]]; then
+            sanitized_args+=("$(sanitize_input "$arg")")
+            expect_user=false
+        elif [[ "$expect_reason" == true ]]; then
+            sanitized_args+=("$(sanitize_reason "$arg")")
+            expect_reason=false
+        elif [[ "$expect_hours" == true ]]; then
+            # Só aceita números
+            if [[ "$arg" =~ ^[0-9]+$ ]]; then
+                sanitized_args+=("$arg")
+            else
+                echo '{"status":"error","message":"Invalid hours value"}'
+                return 1
+            fi
+            expect_hours=false
+        else
+            case "$arg" in
+                --user|-u)  sanitized_args+=("$arg"); expect_user=true ;;
+                --reason)   sanitized_args+=("$arg"); expect_reason=true ;;
+                --hours|-H) sanitized_args+=("$arg"); expect_hours=true ;;
+                -*)         sanitized_args+=("$arg") ;;
+                *)          sanitized_args+=("$(sanitize_input "$arg")") ;;
+            esac
+        fi
+    done
+
+    local args=("${sanitized_args[@]}")
 
     local output exit_code
-    output=$("$MANAGER_SCRIPT" "${args[@]}" 2>&1) || true
-    exit_code=$?
+    output=$("$MANAGER_SCRIPT" "${args[@]}" 2>&1) && exit_code=$? || exit_code=$?
 
     # Strip ANSI color codes
     output=$(echo "$output" | sed 's/\x1b\[[0-9;]*m//g')

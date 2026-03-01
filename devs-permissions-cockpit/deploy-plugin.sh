@@ -26,7 +26,7 @@ cat > "$WORK_DIR/src/manifest.json" << 'ENDFILE'
             "order": 85,
             "keywords": [
                 {
-                    "matches": ["devs", "permissions", "docker", "developers", "access", "teams", "exec", "webconf", "audit", "detran"]
+                    "matches": ["devs", "permissions", "docker", "developers", "access", "teams", "exec", "webconf", "audit"]
                 }
             ]
         }

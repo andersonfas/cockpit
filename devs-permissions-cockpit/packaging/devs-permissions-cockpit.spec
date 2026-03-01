@@ -31,12 +31,12 @@ Funcionalidades:
 %setup -q
 
 %install
-# Plugin Cockpit
-mkdir -p %{buildroot}%{_datadir}/cockpit/%{name}
-install -m 644 src/manifest.json %{buildroot}%{_datadir}/cockpit/%{name}/
-install -m 644 src/index.html %{buildroot}%{_datadir}/cockpit/%{name}/
-install -m 644 src/devs-permissions.js %{buildroot}%{_datadir}/cockpit/%{name}/
-install -m 644 src/devs-permissions.css %{buildroot}%{_datadir}/cockpit/%{name}/
+# Plugin Cockpit (directory matches install.sh: devs-permissions)
+mkdir -p %{buildroot}%{_datadir}/cockpit/devs-permissions
+install -m 644 src/manifest.json %{buildroot}%{_datadir}/cockpit/devs-permissions/
+install -m 644 src/index.html %{buildroot}%{_datadir}/cockpit/devs-permissions/
+install -m 644 src/devs-permissions.js %{buildroot}%{_datadir}/cockpit/devs-permissions/
+install -m 644 src/devs-permissions.css %{buildroot}%{_datadir}/cockpit/devs-permissions/
 
 # Bridge helper
 mkdir -p %{buildroot}%{_libexecdir}/devs-permissions
@@ -52,7 +52,7 @@ mkdir -p %{buildroot}%{_localstatedir}/log/devs_audit/sessions
 mkdir -p %{buildroot}%{_localstatedir}/backups/devs_permissions
 
 %files
-%{_datadir}/cockpit/%{name}/
+%{_datadir}/cockpit/devs-permissions/
 %{_libexecdir}/devs-permissions/cockpit-helper.sh
 %dir %{_sysconfdir}/devs-permissions
 %dir %{_localstatedir}/lib/devs_permissions
@@ -83,7 +83,7 @@ echo ""
 systemctl try-restart cockpit.socket 2>/dev/null || true
 
 %changelog
-* Sat Mar 01 2026 DevOps DETRAN-CE <devops@detran.ce.gov.br> - 1.0.0-1
+* Sat Mar 01 2026 DevOps Team <devops@example.com> - 1.0.0-1
 - Release inicial do plugin Cockpit
 - Dashboard completo com stats
 - Gestao de usuarios (add, remove, promote, demote)

@@ -48,7 +48,7 @@ check_root() {
 }
 
 check_cockpit() {
-    if ! command -v cockpit-bridge &>/dev/null && [[ ! -d "/usr/share/cockpit" ]]; then
+    if ! command -v cockpit-bridge &>/dev/null || [[ ! -d "/usr/share/cockpit" ]]; then
         error "Cockpit nao encontrado."
         echo ""
         echo "Instale primeiro:"
@@ -141,15 +141,15 @@ do_install() {
     # Limpar instalações anteriores com nomes diferentes
     cleanup_old_installs
 
-    # Criar diretórios
+    # Criar diretórios (dados sensíveis com permissões restritivas)
     info "Criando diretorios..."
     mkdir -p "$COCKPIT_DIR"
     mkdir -p "$LIBEXEC_DIR"
     mkdir -p "$CONFIG_DIR"
-    mkdir -p "${DATA_DIR}/temp_access"
-    mkdir -p "${DATA_DIR}/requests"
-    mkdir -p "${LOG_DIR}/sessions"
-    mkdir -p "$BACKUP_DIR"
+    mkdir -p -m 750 "${DATA_DIR}/temp_access"
+    mkdir -p -m 750 "${DATA_DIR}/requests"
+    mkdir -p -m 750 "${LOG_DIR}/sessions"
+    mkdir -p -m 750 "$BACKUP_DIR"
 
     # Instalar plugin Cockpit
     info "Instalando plugin Cockpit..."

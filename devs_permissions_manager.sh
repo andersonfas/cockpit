@@ -152,6 +152,9 @@ declare -a BLOCKED_COMMANDS=(
     "chmod 777 /"
     "chmod -R 777 /"
 )
+declare -a DOCKER_LOGS_PATTERNS=()
+declare -a DOCKER_CONTAINER_PATTERNS=()
+declare -a PROTECTED_USERS=("root" "sysadmin")
 
 # Flags de execução
 DRY_RUN=false
@@ -1210,9 +1213,7 @@ DOCKER_GENERAL
                 [[ "$first" != true ]] && echo ", \\"
                 first=false
                 
-                echo "    /usr/bin/vim ${dir}/*.conf, \\"
-                echo "    /usr/bin/vi ${dir}/*.conf, \\"
-                echo "    /usr/bin/nano ${dir}/*.conf, \\"
+                echo "    /usr/bin/sudoedit ${dir}/*.conf, \\"
                 echo "    /usr/bin/cat ${dir}/*.conf, \\"
                 echo "    /usr/bin/less ${dir}/*.conf, \\"
                 echo "    /usr/bin/ls ${dir}, \\"
@@ -1525,9 +1526,7 @@ BASIC_PERMS
                 [[ "$first" != true ]] && echo ", \\"
                 first=false
                 
-                echo "    /usr/bin/vim ${dir}/*.conf, \\"
-                echo "    /usr/bin/vi ${dir}/*.conf, \\"
-                echo "    /usr/bin/nano ${dir}/*.conf, \\"
+                echo "    /usr/bin/sudoedit ${dir}/*.conf, \\"
                 echo "    /usr/bin/cat ${dir}/*.conf, \\"
                 echo "    /usr/bin/less ${dir}/*.conf, \\"
                 echo "    /usr/bin/ls ${dir}, \\"
@@ -1711,32 +1710,33 @@ log_audit "$@"
 # Verifica comandos bloqueados
 check_blocked "$@"
 
-# Se é exec, faz log de sessão
-if [[ "$1" == "exec" ]]; then
-    # Extrai container e comando
-    shift
-    local container=""
-    local exec_cmd=""
-    
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            -it|-ti|-i|-t) shift ;;
-            -*) shift ;;
+# Se é exec, faz log de sessão (extrai info sem consumir $@)
+if [[ "${1:-}" == "exec" ]]; then
+    _container=""
+    _exec_cmd=""
+    _skip_next=false
+    for _arg in "${@:2}"; do
+        if [[ "$_skip_next" == true ]]; then
+            _skip_next=false
+            continue
+        fi
+        case "$_arg" in
+            -it|-ti|-i|-t|--interactive|--tty) ;;
+            -u|--user|-w|--workdir|-e|--env) _skip_next=true ;;
+            -*) ;;
             *)
-                if [[ -z "$container" ]]; then
-                    container="$1"
+                if [[ -z "$_container" ]]; then
+                    _container="$_arg"
                 else
-                    exec_cmd="$exec_cmd $1"
+                    _exec_cmd="$_exec_cmd $_arg"
                 fi
-                shift
                 ;;
         esac
     done
-    
-    log_session "$container" "$exec_cmd"
+    log_session "$_container" "$_exec_cmd"
 fi
 
-# Executa comando real
+# Executa comando real (argumentos originais intactos)
 exec "$REAL_DOCKER" "$@"
 WRAPPER
     
@@ -1817,6 +1817,10 @@ setup_cron_jobs() {
         return 0
     fi
     
+    # Resolve o path absoluto real do script (funciona mesmo via symlink)
+    local real_script_path
+    real_script_path=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${SCRIPT_DIR}/${SCRIPT_NAME}")
+
     cat > "$CRON_FILE" << EOF
 # DevOps Permissions Manager - Cron Jobs
 # Gerado automaticamente em: $(_ts)
@@ -1825,16 +1829,16 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
 # Limpeza de acessos temporários expirados (a cada 15 min)
-*/15 * * * * root $SCRIPT_DIR/$SCRIPT_NAME cleanup >/dev/null 2>&1
+*/15 * * * * root ${real_script_path} cleanup >/dev/null 2>&1
 
 # Relatório semanal (segunda-feira às 8h)
-0 8 * * 1 root $SCRIPT_DIR/$SCRIPT_NAME send-report >/dev/null 2>&1
+0 8 * * 1 root ${real_script_path} send-report >/dev/null 2>&1
 
 # Health check diário (6h)
-0 6 * * * root $SCRIPT_DIR/$SCRIPT_NAME health-check >/dev/null 2>&1
+0 6 * * * root ${real_script_path} health-check >/dev/null 2>&1
 
 # Rotação de logs de sessão (domingo 3h - mantém 90 dias)
-0 3 * * 0 root find $SESSION_LOG_DIR -name "*.log" -mtime +90 -delete 2>/dev/null
+0 3 * * 0 root find ${SESSION_LOG_DIR} -name "*.log" -mtime +90 -delete 2>/dev/null
 EOF
     
     chmod 644 "$CRON_FILE"
@@ -2011,32 +2015,36 @@ list_inactive_users() {
     threshold=$(date -d "-${days} days" +%s)
     local count=0
     
-    # Verifica cada usuário dos grupos
+    # Coleta todos os usuários únicos dos grupos
+    local all_members=""
     for group in "$GRUPO_DEV" "$GRUPO_DEV_EXEC"; do
         group_exists "$group" || continue
-        
         local members
         members=$(getent group "$group" | cut -d: -f4)
-        
-        IFS=',' read -ra users <<< "$members"
-        for user in "${users[@]}"; do
-            [[ -z "$user" ]] && continue
-            
-            local last_activity
-            last_activity=$(get_user_last_activity "$user")
-            
-            # Tenta converter para timestamp
-            local activity_ts=0
-            if [[ "$last_activity" != "Nunca" ]]; then
-                activity_ts=$(date -d "$last_activity" +%s 2>/dev/null || echo "0")
-            fi
-            
-            if [[ $activity_ts -lt $threshold ]]; then
-                printf "  %-20s  Última atividade: %s\n" "$user" "$last_activity"
-                ((count++))
-            fi
-        done
+        [[ -n "$members" ]] && all_members="${all_members:+${all_members},}${members}"
     done
+
+    # Deduplica
+    local unique_users
+    unique_users=$(echo "$all_members" | tr ',' '\n' | sort -u | grep -v '^$')
+
+    while IFS= read -r user; do
+        [[ -z "$user" ]] && continue
+
+        local last_activity
+        last_activity=$(get_user_last_activity "$user")
+
+        # Tenta converter para timestamp
+        local activity_ts=0
+        if [[ "$last_activity" != "Nunca" ]]; then
+            activity_ts=$(date -d "$last_activity" +%s 2>/dev/null || echo "0")
+        fi
+
+        if [[ $activity_ts -lt $threshold ]]; then
+            printf "  %-20s  Última atividade: %s\n" "$user" "$last_activity"
+            ((count++))
+        fi
+    done <<< "$unique_users"
     
     echo ""
     echo "  Total: $count usuários inativos"
@@ -2145,14 +2153,26 @@ create_request() {
     
     mkdir -p "$REQUESTS_DIR"
     
+    # Escape JSON special characters in reason
+    local safe_reason="${reason//\\/\\\\}"
+    safe_reason="${safe_reason//\"/\\\"}"
+    safe_reason="${safe_reason//$'\n'/\\n}"
+    safe_reason="${safe_reason//$'\t'/\\t}"
+
+    # Validate hours is numeric
+    if ! [[ "$hours" =~ ^[0-9]+$ ]]; then
+        log_error "Horas deve ser um número: $hours"
+        return 1
+    fi
+
     cat > "${REQUESTS_DIR}/${request_id}.json" << EOF
 {
-    "id": "$request_id",
+    "request_id": "$request_id",
     "user": "$user",
     "hours": $hours,
-    "reason": "$reason",
+    "reason": "$safe_reason",
     "status": "pending",
-    "created_at": "$(_ts)",
+    "timestamp": "$(_ts)",
     "created_by": "${SUDO_USER:-$user}",
     "environment": "$ENVIRONMENT"
 }
@@ -3054,10 +3074,16 @@ cmd_apply() {
         return 0
     fi
     
+    # Adquire lock para evitar execução concorrente
+    if ! acquire_lock; then
+        log_error "Não foi possível adquirir lock. Outro processo em execução?"
+        return 1
+    fi
+
     # Executa
     init_directories
     create_backup
-    
+
     # Cria grupos
     ensure_group_exists "$GRUPO_DEV"
     ensure_group_exists "$GRUPO_DEV_EXEC"
@@ -3123,6 +3149,8 @@ cmd_apply() {
     echo "  3. Verifique: $SCRIPT_NAME status"
     echo "  4. Dashboard: $SCRIPT_NAME dashboard"
     echo ""
+
+    release_lock
 }
 
 #===============================================================================
@@ -3227,7 +3255,7 @@ list_orphan_users() {
     echo ""
     
     # Salva lista para uso pelo cleanup
-    printf '%s\n' "${orphan_users[@]}" > /tmp/devs_orphan_users.list
+    printf '%s\n' "${orphan_users[@]}" > ${BACKUP_DIR}/orphan_users.list
     
     return 0
 }
@@ -3243,7 +3271,7 @@ cleanup_orphan_users() {
     list_orphan_users
     
     # Verifica se há órfãos
-    if [[ ! -f /tmp/devs_orphan_users.list ]]; then
+    if [[ ! -f ${BACKUP_DIR}/orphan_users.list ]]; then
         log_info "Nenhum usuário órfão para limpar"
         return 0
     fi
@@ -3251,11 +3279,11 @@ cleanup_orphan_users() {
     local -a orphan_users=()
     while IFS= read -r user; do
         [[ -n "$user" ]] && orphan_users+=("$user")
-    done < /tmp/devs_orphan_users.list
+    done < ${BACKUP_DIR}/orphan_users.list
     
     if [[ ${#orphan_users[@]} -eq 0 ]]; then
         log_info "Nenhum usuário órfão para limpar"
-        rm -f /tmp/devs_orphan_users.list
+        rm -f ${BACKUP_DIR}/orphan_users.list
         return 0
     fi
     
@@ -3269,18 +3297,22 @@ cleanup_orphan_users() {
     
     if [[ "$DRY_RUN" == true ]]; then
         log_dry "Usuários que seriam deletados: ${orphan_users[*]}"
-        rm -f /tmp/devs_orphan_users.list
+        rm -f ${BACKUP_DIR}/orphan_users.list
         return 0
     fi
     
-    # Confirmação com palavra-chave
-    echo -e "  Digite ${YELLOW}DELETAR${NC} para confirmar a remoção:"
-    read -r -p "  > " confirm
-    
-    if [[ "$confirm" != "DELETAR" ]]; then
-        log_info "Operação cancelada"
-        rm -f /tmp/devs_orphan_users.list
-        return 0
+    # Confirmação com palavra-chave (pulada em modo --force, ex: via Cockpit)
+    if [[ "$FORCE" == true ]]; then
+        log_info "Modo --force ativo, pulando confirmação interativa"
+    else
+        echo -e "  Digite ${YELLOW}DELETAR${NC} para confirmar a remoção:"
+        read -r -p "  > " confirm
+
+        if [[ "$confirm" != "DELETAR" ]]; then
+            log_info "Operação cancelada"
+            rm -f ${BACKUP_DIR}/orphan_users.list
+            return 0
+        fi
     fi
     
     echo ""
@@ -3301,10 +3333,9 @@ cleanup_orphan_users() {
             continue
         fi
         
-        # Lista de usuários protegidos
-        local protected_users=("root" "sysadmin" "anderson.santos" "alison.araujo" "manoel.silva" "ivan.lima")
+        # Lista de usuários protegidos (configurável via PROTECTED_USERS no config)
         local is_protected=false
-        for pu in "${protected_users[@]}"; do
+        for pu in "${PROTECTED_USERS[@]}"; do
             [[ "$user" == "$pu" ]] && is_protected=true && break
         done
         
@@ -3362,7 +3393,7 @@ cleanup_orphan_users() {
         fi
     done
     
-    rm -f /tmp/devs_orphan_users.list
+    rm -f ${BACKUP_DIR}/orphan_users.list
     
     echo ""
     log_ok "Limpeza concluída: $deleted usuários removidos"
@@ -4084,7 +4115,7 @@ main() {
         backup)          create_backup ;;
         list-backups)    list_backups ;;
         send-report)     send_report ;;
-        generate-html)   generate_dashboard_html "${CMD_USER:-/var/www/html/devs-dashboard/index.html}" ;;
+        generate-html)   generate_dashboard_html "$DASHBOARD_DIR/index.html" ;;
         sync)            sync_group_members ;;
         list-orphans)    list_orphan_users ;;
         cleanup-users)   cleanup_orphan_users ;;
@@ -4095,15 +4126,6 @@ main() {
             ;;
     esac
 }
-
-#===============================================================================
-# EXECUÇÃO
-#===============================================================================
-
-# Só executa se for o script principal (não se for source)
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
 
 #===============================================================================
 # GERAÇÃO DE DASHBOARD HTML
@@ -4355,3 +4377,12 @@ HTMLEOF
     chmod 644 "$output_file"
     log_ok "Dashboard gerado: $output_file"
 }
+
+#===============================================================================
+# EXECUÇÃO
+#===============================================================================
+
+# Só executa se for o script principal (não se for source)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

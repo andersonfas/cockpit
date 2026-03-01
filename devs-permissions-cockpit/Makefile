@@ -1,6 +1,6 @@
 NAME = devs-permissions-cockpit
 VERSION = 1.0.0
-COCKPIT_DIR = /usr/share/cockpit/$(NAME)
+COCKPIT_DIR = /usr/share/cockpit/devs-permissions
 LIBEXEC_DIR = /usr/libexec/devs-permissions
 CONFIG_DIR = /etc/devs-permissions
 DATA_DIR = /var/lib/devs_permissions
