@@ -21,7 +21,7 @@ readonly NAME="devs-permissions-cockpit"
 readonly VERSION="1.0.0"
 
 # Paths FHS
-readonly COCKPIT_DIR="/usr/share/cockpit/${NAME}"
+readonly COCKPIT_DIR="/usr/share/cockpit/devs-permissions"
 readonly LIBEXEC_DIR="/usr/libexec/devs-permissions"
 readonly CONFIG_DIR="/etc/devs-permissions"
 readonly DATA_DIR="/var/lib/devs_permissions"
@@ -74,11 +74,72 @@ check_files() {
     done
 }
 
+cleanup_old_installs() {
+    # Remove instalações anteriores com nomes diferentes para evitar menus duplicados
+    local old_dirs=(
+        "/usr/share/cockpit/devs-permissions-cockpit"
+        "/usr/share/cockpit/devs_permissions"
+    )
+    for dir in "${old_dirs[@]}"; do
+        if [[ -d "$dir" && "$dir" != "$COCKPIT_DIR" ]]; then
+            warn "Removendo instalacao antiga em ${dir}..."
+            rm -rf "$dir"
+        fi
+    done
+}
+
+ensure_config() {
+    # Cria config base se não existir
+    if [[ ! -f "${CONFIG_DIR}/devs_permissions.conf" ]]; then
+        info "Criando configuracao base em ${CONFIG_DIR}/devs_permissions.conf..."
+        cat > "${CONFIG_DIR}/devs_permissions.conf" <<'CONF'
+#===============================================================================
+# DevOps Permissions Manager - Configuracao
+# Gerado automaticamente pelo instalador
+#===============================================================================
+
+# Ambiente: development, staging, production
+ENVIRONMENT="production"
+
+# Grupos do sistema
+GRUPO_DEV="devs"
+GRUPO_DEV_EXEC="devs_exec"
+GRUPO_DEV_WEBCONF="devs_webconf"
+
+# Docker socket
+DOCKER_SOCKET="/var/run/docker.sock"
+
+# Auditoria
+ENABLE_AUDIT="true"
+AUDIT_LOG_DIR="/var/log/devs_audit"
+
+# Acesso temporario padrao (horas)
+DEFAULT_TEMP_HOURS=4
+MAX_TEMP_HOURS=24
+
+# Times (exemplo - edite conforme necessario)
+TEAMS=(
+    "exemplo"
+)
+TEAM_exemplo_USERS=(
+    "usuario1"
+)
+TEAM_exemplo_CONTAINERS=(
+    "container1"
+)
+CONF
+        chmod 644 "${CONFIG_DIR}/devs_permissions.conf"
+    fi
+}
+
 do_install() {
     header "Instalando ${NAME} v${VERSION}"
 
     check_cockpit
     check_files
+
+    # Limpar instalações anteriores com nomes diferentes
+    cleanup_old_installs
 
     # Criar diretórios
     info "Criando diretorios..."
@@ -106,6 +167,9 @@ do_install() {
         install_scripts
     fi
 
+    # Garantir config base existe
+    ensure_config
+
     # Restart cockpit
     info "Reiniciando Cockpit..."
     systemctl try-restart cockpit.socket 2>/dev/null || warn "Nao foi possivel reiniciar cockpit.socket"
@@ -124,7 +188,6 @@ do_install() {
         echo ""
         echo "  Copie os scripts para os caminhos FHS:"
         echo "    sudo cp devs_permissions_manager.sh ${LIBEXEC_DIR}/"
-        echo "    sudo cp devs_permissions.conf ${CONFIG_DIR}/"
         echo "    sudo chmod +x ${LIBEXEC_DIR}/devs_permissions_manager.sh"
         echo ""
         echo "  Ou reinstale com: sudo $0 --with-scripts"
@@ -135,19 +198,39 @@ do_install() {
 install_scripts() {
     info "Copiando scripts principais..."
 
-    # Procurar os scripts no mesmo diretório ou no diretório pai
+    # Procurar os scripts em locais comuns
     local manager_src="" config_src=""
+    local search_dirs=(
+        "${SCRIPT_DIR}"
+        "${SCRIPT_DIR}/.."
+        "/root/bin"
+        "/root"
+        "/home/*/bin"
+        "/opt/devs-permissions"
+        "/usr/local/bin"
+        "/usr/local/sbin"
+    )
 
-    for dir in "${SCRIPT_DIR}" "${SCRIPT_DIR}/.." "/root/bin"; do
-        [[ -f "${dir}/devs_permissions_manager.sh" ]] && manager_src="${dir}/devs_permissions_manager.sh"
-        [[ -f "${dir}/devs_permissions.conf" ]] && config_src="${dir}/devs_permissions.conf"
+    for pattern in "${search_dirs[@]}"; do
+        for dir in $pattern; do
+            [[ -d "$dir" ]] || continue
+            [[ -z "$manager_src" && -f "${dir}/devs_permissions_manager.sh" ]] && manager_src="${dir}/devs_permissions_manager.sh"
+            [[ -z "$config_src" && -f "${dir}/devs_permissions.conf" ]] && config_src="${dir}/devs_permissions.conf"
+        done
     done
+
+    # Se nao encontrou nos locais comuns, busca no sistema todo
+    if [[ -z "$manager_src" ]]; then
+        info "  Buscando devs_permissions_manager.sh no sistema..."
+        manager_src=$(find / -maxdepth 4 -name "devs_permissions_manager.sh" -type f 2>/dev/null | head -1)
+    fi
 
     if [[ -n "$manager_src" ]]; then
         install -m 755 "$manager_src" "${LIBEXEC_DIR}/devs_permissions_manager.sh"
         info "  Manager: ${manager_src} -> ${LIBEXEC_DIR}/"
     else
-        warn "  devs_permissions_manager.sh nao encontrado. Copie manualmente."
+        warn "  devs_permissions_manager.sh nao encontrado no sistema."
+        warn "  Copie manualmente para: ${LIBEXEC_DIR}/devs_permissions_manager.sh"
     fi
 
     if [[ -n "$config_src" ]]; then
@@ -158,20 +241,20 @@ install_scripts() {
         else
             info "  Config ja existe em ${CONFIG_DIR}/, mantendo existente."
         fi
-    else
-        warn "  devs_permissions.conf nao encontrado. Copie manualmente."
     fi
 }
 
 do_uninstall() {
     header "Removendo ${NAME}"
 
-    if [[ -d "$COCKPIT_DIR" ]]; then
-        rm -rf "$COCKPIT_DIR"
-        info "Plugin removido de ${COCKPIT_DIR}"
-    else
-        warn "Plugin nao encontrado em ${COCKPIT_DIR}"
-    fi
+    # Remove todas as possíveis instalações
+    local all_dirs=("$COCKPIT_DIR" "/usr/share/cockpit/devs-permissions-cockpit" "/usr/share/cockpit/devs_permissions")
+    for dir in "${all_dirs[@]}"; do
+        if [[ -d "$dir" ]]; then
+            rm -rf "$dir"
+            info "Plugin removido de ${dir}"
+        fi
+    done
 
     if [[ -f "${LIBEXEC_DIR}/cockpit-helper.sh" ]]; then
         rm -f "${LIBEXEC_DIR}/cockpit-helper.sh"

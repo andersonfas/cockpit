@@ -231,7 +231,12 @@
             });
 
         }).catch(function (err) {
-            showAlert("Erro ao carregar dashboard: " + err, "danger");
+            var msg = String(err || "");
+            if (msg.indexOf("permission") !== -1 || msg.indexOf("not-authorized") !== -1 || msg.indexOf("access-denied") !== -1 || msg.indexOf("Not permitted") !== -1) {
+                showAlert("Acesso administrativo necessario. Clique no cadeado no canto superior direito do Cockpit e ative o acesso administrativo.", "danger");
+            } else {
+                showAlert("Erro ao carregar dashboard: " + msg, "danger");
+            }
         });
     }
 
@@ -771,9 +776,14 @@
             show($("install-warning"));
         }
         loadDashboard();
-    }).catch(function () {
-        show($("install-warning"));
-        showAlert("Erro ao conectar com o helper. Verifique a instalacao.", "danger");
+    }).catch(function (err) {
+        var msg = String(err || "");
+        if (msg.indexOf("permission") !== -1 || msg.indexOf("not-authorized") !== -1 || msg.indexOf("access-denied") !== -1 || msg.indexOf("Not permitted") !== -1) {
+            showAlert("Acesso administrativo necessario. Clique no cadeado no canto superior direito do Cockpit e ative o acesso administrativo.", "danger");
+        } else {
+            show($("install-warning"));
+            showAlert("Erro ao conectar com o helper: " + msg, "danger");
+        }
     });
 
     _refreshTimer = setInterval(function () {
