@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+#===============================================================================
+#
+#   INSTALADOR UNIVERSAL - devs-permissions-cockpit
+#
+#   Detecta a distro e instala o plugin usando o método mais adequado.
+#   Funciona em RHEL/CentOS/Rocky 8+, Ubuntu 20.04+, Debian 11+.
+#
+#   USO:
+#       sudo ./install.sh                    # Instala
+#       sudo ./install.sh --uninstall        # Remove
+#       sudo ./install.sh --with-scripts     # Instala plugin + copia scripts
+#       sudo ./install.sh --build-rpm        # Apenas gera o RPM sem instalar
+#
+#===============================================================================
+
+set -euo pipefail
+
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly NAME="devs-permissions-cockpit"
+readonly VERSION="1.0.0"
+
+# Paths FHS
+readonly COCKPIT_DIR="/usr/share/cockpit/${NAME}"
+readonly LIBEXEC_DIR="/usr/libexec/devs-permissions"
+readonly CONFIG_DIR="/etc/devs-permissions"
+readonly DATA_DIR="/var/lib/devs_permissions"
+readonly LOG_DIR="/var/log/devs_audit"
+readonly BACKUP_DIR="/var/backups/devs_permissions"
+
+# Cores
+if [[ -t 1 ]]; then
+    R='\033[0;31m' G='\033[0;32m' Y='\033[1;33m' B='\033[0;34m' N='\033[0m'
+else
+    R='' G='' Y='' B='' N=''
+fi
+
+info()  { echo -e "${G}[INFO]${N} $*"; }
+warn()  { echo -e "${Y}[WARN]${N} $*"; }
+error() { echo -e "${R}[ERRO]${N} $*" >&2; }
+header(){ echo -e "\n${B}=== $* ===${N}"; }
+
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        error "Execute como root: sudo $0 $*"
+        exit 1
+    fi
+}
+
+check_cockpit() {
+    if ! command -v cockpit-bridge &>/dev/null && [[ ! -d "/usr/share/cockpit" ]]; then
+        error "Cockpit nao encontrado."
+        echo ""
+        echo "Instale primeiro:"
+        echo "  RHEL/CentOS/Rocky: sudo dnf install cockpit && sudo systemctl enable --now cockpit.socket"
+        echo "  Ubuntu/Debian:     sudo apt install cockpit && sudo systemctl enable --now cockpit.socket"
+        exit 1
+    fi
+}
+
+check_files() {
+    local required=(
+        "src/manifest.json"
+        "src/index.html"
+        "src/devs-permissions.js"
+        "src/devs-permissions.css"
+        "bridge/cockpit-helper.sh"
+    )
+    for f in "${required[@]}"; do
+        if [[ ! -f "${SCRIPT_DIR}/${f}" ]]; then
+            error "Arquivo obrigatorio nao encontrado: ${f}"
+            exit 1
+        fi
+    done
+}
+
+do_install() {
+    header "Instalando ${NAME} v${VERSION}"
+
+    check_cockpit
+    check_files
+
+    # Criar diretórios
+    info "Criando diretorios..."
+    mkdir -p "$COCKPIT_DIR"
+    mkdir -p "$LIBEXEC_DIR"
+    mkdir -p "$CONFIG_DIR"
+    mkdir -p "${DATA_DIR}/temp_access"
+    mkdir -p "${DATA_DIR}/requests"
+    mkdir -p "${LOG_DIR}/sessions"
+    mkdir -p "$BACKUP_DIR"
+
+    # Instalar plugin Cockpit
+    info "Instalando plugin Cockpit..."
+    install -m 644 "${SCRIPT_DIR}/src/manifest.json" "${COCKPIT_DIR}/"
+    install -m 644 "${SCRIPT_DIR}/src/index.html" "${COCKPIT_DIR}/"
+    install -m 644 "${SCRIPT_DIR}/src/devs-permissions.js" "${COCKPIT_DIR}/"
+    install -m 644 "${SCRIPT_DIR}/src/devs-permissions.css" "${COCKPIT_DIR}/"
+
+    # Instalar bridge
+    info "Instalando bridge helper..."
+    install -m 755 "${SCRIPT_DIR}/bridge/cockpit-helper.sh" "${LIBEXEC_DIR}/"
+
+    # Instalar scripts principais se --with-scripts
+    if [[ "${WITH_SCRIPTS:-false}" == true ]]; then
+        install_scripts
+    fi
+
+    # Restart cockpit
+    info "Reiniciando Cockpit..."
+    systemctl try-restart cockpit.socket 2>/dev/null || warn "Nao foi possivel reiniciar cockpit.socket"
+
+    echo ""
+    info "============================================="
+    info " Instalacao concluida!"
+    info "============================================="
+    echo ""
+    echo "  Acesse: https://$(hostname -f 2>/dev/null || hostname):9090"
+    echo "  Menu lateral: DevOps Permissions"
+    echo ""
+
+    if [[ ! -x "${LIBEXEC_DIR}/devs_permissions_manager.sh" ]]; then
+        warn "Script principal ainda nao instalado!"
+        echo ""
+        echo "  Copie os scripts para os caminhos FHS:"
+        echo "    sudo cp devs_permissions_manager.sh ${LIBEXEC_DIR}/"
+        echo "    sudo cp devs_permissions.conf ${CONFIG_DIR}/"
+        echo "    sudo chmod +x ${LIBEXEC_DIR}/devs_permissions_manager.sh"
+        echo ""
+        echo "  Ou reinstale com: sudo $0 --with-scripts"
+        echo ""
+    fi
+}
+
+install_scripts() {
+    info "Copiando scripts principais..."
+
+    # Procurar os scripts no mesmo diretório ou no diretório pai
+    local manager_src="" config_src=""
+
+    for dir in "${SCRIPT_DIR}" "${SCRIPT_DIR}/.." "/root/bin"; do
+        [[ -f "${dir}/devs_permissions_manager.sh" ]] && manager_src="${dir}/devs_permissions_manager.sh"
+        [[ -f "${dir}/devs_permissions.conf" ]] && config_src="${dir}/devs_permissions.conf"
+    done
+
+    if [[ -n "$manager_src" ]]; then
+        install -m 755 "$manager_src" "${LIBEXEC_DIR}/devs_permissions_manager.sh"
+        info "  Manager: ${manager_src} -> ${LIBEXEC_DIR}/"
+    else
+        warn "  devs_permissions_manager.sh nao encontrado. Copie manualmente."
+    fi
+
+    if [[ -n "$config_src" ]]; then
+        # Só copia se não existir (não sobrescreve config do usuário)
+        if [[ ! -f "${CONFIG_DIR}/devs_permissions.conf" ]]; then
+            install -m 644 "$config_src" "${CONFIG_DIR}/devs_permissions.conf"
+            info "  Config: ${config_src} -> ${CONFIG_DIR}/"
+        else
+            info "  Config ja existe em ${CONFIG_DIR}/, mantendo existente."
+        fi
+    else
+        warn "  devs_permissions.conf nao encontrado. Copie manualmente."
+    fi
+}
+
+do_uninstall() {
+    header "Removendo ${NAME}"
+
+    if [[ -d "$COCKPIT_DIR" ]]; then
+        rm -rf "$COCKPIT_DIR"
+        info "Plugin removido de ${COCKPIT_DIR}"
+    else
+        warn "Plugin nao encontrado em ${COCKPIT_DIR}"
+    fi
+
+    if [[ -f "${LIBEXEC_DIR}/cockpit-helper.sh" ]]; then
+        rm -f "${LIBEXEC_DIR}/cockpit-helper.sh"
+        info "Helper removido de ${LIBEXEC_DIR}"
+    fi
+
+    # Não remove scripts, config nem dados!
+    if [[ -x "${LIBEXEC_DIR}/devs_permissions_manager.sh" ]]; then
+        info "Scripts e config mantidos em ${LIBEXEC_DIR} e ${CONFIG_DIR}."
+        info "Para remover tudo: rm -rf ${LIBEXEC_DIR} ${CONFIG_DIR}"
+    fi
+
+    systemctl try-restart cockpit.socket 2>/dev/null || true
+    info "Desinstalacao concluida."
+}
+
+do_build_rpm() {
+    header "Gerando RPM"
+
+    if ! command -v rpmbuild &>/dev/null; then
+        error "rpmbuild nao encontrado. Instale: sudo dnf install rpm-build"
+        exit 1
+    fi
+
+    cd "${SCRIPT_DIR}"
+    make rpm
+}
+
+# === MAIN ===
+
+ACTION="install"
+WITH_SCRIPTS=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --uninstall)     ACTION="uninstall" ;;
+        --with-scripts)  WITH_SCRIPTS=true ;;
+        --build-rpm)     ACTION="build-rpm" ;;
+        -h|--help)
+            echo "Uso: $0 [OPCOES]"
+            echo ""
+            echo "OPCOES:"
+            echo "  (sem opcoes)       Instala o plugin Cockpit"
+            echo "  --with-scripts     Instala plugin + copia scripts do manager"
+            echo "  --uninstall        Remove o plugin (mantem scripts e dados)"
+            echo "  --build-rpm        Gera pacote RPM sem instalar"
+            echo "  -h, --help         Esta ajuda"
+            exit 0
+            ;;
+        *)
+            error "Opcao desconhecida: $arg"
+            exit 1
+            ;;
+    esac
+done
+
+check_root "$@"
+
+case "$ACTION" in
+    install)   do_install ;;
+    uninstall) do_uninstall ;;
+    build-rpm) do_build_rpm ;;
+esac
