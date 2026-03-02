@@ -848,6 +848,86 @@ list_backups() {
     echo ""
 }
 
+# Restaura backup
+restore_backup() {
+    local backup_name="$1"
+
+    if [[ -z "$backup_name" ]]; then
+        log_error "Especifique o nome do backup para restaurar"
+        log_error "Use: $SCRIPT_NAME list-backups para ver os disponíveis"
+        return 1
+    fi
+
+    local backup_path="${BACKUP_DIR}/${backup_name}"
+
+    if [[ ! -d "$backup_path" ]]; then
+        log_error "Backup não encontrado: $backup_path"
+        return 1
+    fi
+
+    log_info "Restaurando backup: $backup_name"
+
+    # Cria backup atual antes de restaurar
+    log_info "Criando backup de segurança antes da restauração..."
+    create_backup
+
+    local restored=0
+
+    # Restaura sudoers
+    local sudoers_file
+    sudoers_file=$(find "$backup_path" -maxdepth 1 -name "*.sudoers" -o -name "99-devs-*" 2>/dev/null | head -1)
+    if [[ -n "$sudoers_file" && -f "$sudoers_file" ]]; then
+        if visudo -c -f "$sudoers_file" &>/dev/null; then
+            cp "$sudoers_file" "$SUDO_FILE"
+            chmod 440 "$SUDO_FILE"
+            log_ok "Sudoers restaurado"
+            ((restored++))
+        else
+            log_warn "Sudoers no backup tem erros de sintaxe, ignorando"
+        fi
+    fi
+
+    # Restaura config
+    if [[ -f "$backup_path/devs_permissions.conf" ]]; then
+        cp "$backup_path/devs_permissions.conf" "$CONFIG_FILE"
+        chmod 644 "$CONFIG_FILE"
+        log_ok "Configuração restaurada"
+        ((restored++))
+    fi
+
+    # Restaura docker wrapper
+    if [[ -f "$backup_path/docker" ]]; then
+        cp "$backup_path/docker" "$DOCKER_WRAPPER_PATH"
+        chmod 755 "$DOCKER_WRAPPER_PATH"
+        log_ok "Docker wrapper restaurado"
+        ((restored++))
+    fi
+
+    # Restaura cron
+    if [[ -f "$backup_path/devs_permissions_jobs" ]]; then
+        cp "$backup_path/devs_permissions_jobs" "$CRON_FILE"
+        chmod 644 "$CRON_FILE"
+        log_ok "Cron jobs restaurados"
+        ((restored++))
+    fi
+
+    # Restaura grupos se o arquivo existir
+    if [[ -f "$backup_path/groups.txt" ]]; then
+        log_info "Informações de grupos disponíveis em: $backup_path/groups.txt"
+        log_info "Restauração de membros de grupos requer 'apply' após restaurar config"
+    fi
+
+    if [[ $restored -eq 0 ]]; then
+        log_warn "Nenhum arquivo encontrado para restaurar no backup"
+    else
+        audit_log "BACKUP_RESTORED" "root" "backup=$backup_name,files=$restored"
+        log_ok "Restauração concluída: $restored arquivo(s) restaurado(s)"
+        log_info "Execute '$SCRIPT_NAME apply' para reaplicar as configurações restauradas"
+    fi
+
+    return 0
+}
+
 #===============================================================================
 # GESTÃO DE GRUPOS
 #===============================================================================
@@ -4114,6 +4194,7 @@ main() {
             ;;
         backup)          create_backup ;;
         list-backups)    list_backups ;;
+        restore-backup)  restore_backup "$CMD_USER" ;;
         send-report)     send_report ;;
         generate-html)   generate_dashboard_html "$DASHBOARD_DIR/index.html" ;;
         sync)            sync_group_members ;;

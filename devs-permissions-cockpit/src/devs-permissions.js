@@ -1,10 +1,9 @@
 /*
  * DevOps Permissions Manager - Cockpit Plugin
- * Interface gráfica completa para o devs_permissions_manager.sh
+ * Interface grafica completa para o devs_permissions_manager.sh
  *
- * Comunicação: cockpit-helper.sh (bridge JSON)
- * Equipe: DevOps - DETRAN-CE
- * Versão: 1.0.0
+ * Comunicacao: cockpit-helper.sh (bridge JSON)
+ * Versao: 1.1.0
  */
 
 (function () {
@@ -61,10 +60,6 @@
      * COCKPIT BRIDGE COMMUNICATION
      * ================================================================ */
 
-    /**
-     * Chama o cockpit-helper.sh e retorna JSON parsed.
-     * helper("get-overview") → Promise<{status, counts, groups}>
-     */
     function helper(command, extraArgs) {
         var args = [HELPER, command];
         if (extraArgs) args = args.concat(extraArgs);
@@ -83,11 +78,6 @@
         });
     }
 
-    /**
-     * Executa um comando do manager via bridge: helper run <args...>
-     * manager("apply") ou manager("add-user", "--user", "joao")
-     * Aceita argumentos individuais OU um array como primeiro argumento.
-     */
     function manager() {
         var cmdArgs = [HELPER, "run"];
         if (arguments.length === 1 && Array.isArray(arguments[0])) {
@@ -110,9 +100,6 @@
         });
     }
 
-    /**
-     * Lê/escreve arquivo via cockpit.file
-     */
     function readFile(path) { return cockpit.file(path, { superuser: "try" }).read(); }
     function writeFile(path, content) { return cockpit.file(path, { superuser: "require" }).replace(content); }
 
@@ -177,11 +164,24 @@
             env.textContent = (ov.environment || "").toUpperCase();
             env.className = "env-badge env-" + (ov.environment || "unknown");
 
-            // Groups panel
+            // Groups panel - user names as tags for better display
             var gh = '<div class="ilist">';
-            gh += '<div class="irow"><span class="ilabel">devs (Basico):</span><span>' + esc(ov.groups.basic || "Nenhum") + '</span></div>';
-            gh += '<div class="irow"><span class="ilabel">devs_exec (Exec):</span><span>' + esc(ov.groups.exec || "Nenhum") + '</span></div>';
-            gh += '<div class="irow"><span class="ilabel">devs_webconf (WebConf):</span><span>' + esc(ov.groups.webconf || "Nenhum") + '</span></div>';
+            ["basic", "exec", "webconf"].forEach(function (level) {
+                var label = level === "basic" ? "devs (Basico)" : (level === "exec" ? "devs_exec (Exec)" : "devs_webconf (WebConf)");
+                var members = ov.groups[level] || "";
+                gh += '<div class="irow"><span class="ilabel">' + esc(label) + ':</span>';
+                if (members) {
+                    gh += '<div class="tags" style="flex:1">';
+                    members.split(",").forEach(function (u) {
+                        u = u.trim();
+                        if (u) gh += '<span class="tag">' + esc(u) + '</span>';
+                    });
+                    gh += '</div>';
+                } else {
+                    gh += '<span class="muted">Nenhum</span>';
+                }
+                gh += '</div>';
+            });
             gh += '</div>';
             $("dash-groups").innerHTML = gh;
 
@@ -218,7 +218,7 @@
                 $("dash-requests").innerHTML = rh;
             }
 
-            // Status panel - quick check
+            // Status panel
             helper("check-install").then(function (inst) {
                 var sh = '<div class="ilist">';
                 sh += '<div class="irow"><span class="ilabel">Manager:</span><span class="badge ' + (inst.manager_installed ? "bg-green" : "bg-red") + '">' + (inst.manager_installed ? "Instalado" : "Nao encontrado") + '</span></div>';
@@ -291,8 +291,7 @@
     }
 
     function bindUserActions() {
-        var buttons = document.querySelectorAll("#users-tbody button[data-act]");
-        buttons.forEach(function (btn) {
+        document.querySelectorAll("#users-tbody button[data-act]").forEach(function (btn) {
             btn.onclick = function () {
                 var act = btn.getAttribute("data-act");
                 var user = btn.getAttribute("data-user");
@@ -306,11 +305,9 @@
         });
     }
 
-    // Filtro de usuarios
     $("user-search").addEventListener("input", function () {
         var filter = this.value.toLowerCase();
-        var rows = document.querySelectorAll("#users-tbody tr");
-        rows.forEach(function (row) {
+        document.querySelectorAll("#users-tbody tr").forEach(function (row) {
             var name = row.querySelector(".uname");
             if (!name) return;
             row.style.display = name.textContent.toLowerCase().indexOf(filter) !== -1 ? "" : "none";
@@ -612,6 +609,184 @@
     };
 
     /* ================================================================
+     * TAB: SETTINGS (structured config editor)
+     * ================================================================ */
+
+    function makeToggle(id, checked) {
+        return '<label class="toggle-switch"><input type="checkbox" id="s-' + id + '"' + (checked ? ' checked' : '') + ' /><span class="toggle-slider"></span></label>';
+    }
+
+    function makeInput(id, value, type, placeholder) {
+        return '<input type="' + (type || "text") + '" id="s-' + id + '" class="finput" value="' + esc(value || "") + '"' + (placeholder ? ' placeholder="' + esc(placeholder) + '"' : '') + ' />';
+    }
+
+    function makeSelect(id, value, options) {
+        var h = '<select id="s-' + id + '" class="finput">';
+        options.forEach(function (o) {
+            h += '<option value="' + esc(o.v) + '"' + (value === o.v ? ' selected' : '') + '>' + esc(o.l) + '</option>';
+        });
+        h += '</select>';
+        return h;
+    }
+
+    function loadSettings() {
+        helper("get-settings").then(function (s) {
+            if (s.status !== "ok") {
+                $("settings-container").innerHTML = '<p class="muted">Erro ao carregar: ' + esc(s.message || "") + '</p>';
+                return;
+            }
+            var html = '';
+
+            // === AMBIENTE & COMPORTAMENTO ===
+            html += '<div class="settings-section"><h4>Ambiente e Comportamento</h4>';
+            html += '<div class="fg"><label>Ambiente:</label>' + makeSelect("ENVIRONMENT", s.ambiente.ENVIRONMENT, [
+                { v: "production", l: "Production" }, { v: "staging", l: "Staging" }, { v: "development", l: "Development" }
+            ]) + '</div>';
+            html += '<div class="fg"><label>Shell padrao:</label>' + makeInput("DEFAULT_SHELL", s.ambiente.DEFAULT_SHELL, "text", "/bin/bash") + '</div>';
+            html += '<div class="toggle-row"><label>Criar usuarios automaticamente</label>' + makeToggle("AUTO_CREATE_USERS", s.ambiente.AUTO_CREATE_USERS) + '</div>';
+            html += '<div class="toggle-row"><label>Criar grupos automaticamente</label>' + makeToggle("AUTO_CREATE_GROUPS", s.ambiente.AUTO_CREATE_GROUPS) + '</div>';
+            html += '</div>';
+
+            // === GRUPOS ===
+            html += '<div class="settings-section"><h4>Nomes dos Grupos</h4>';
+            html += '<div class="fg"><label>Grupo Basico:</label>' + makeInput("GRUPO_DEV", s.grupos.GRUPO_DEV) + '</div>';
+            html += '<div class="fg"><label>Grupo Exec:</label>' + makeInput("GRUPO_DEV_EXEC", s.grupos.GRUPO_DEV_EXEC) + '</div>';
+            html += '<div class="fg"><label>Grupo WebConf:</label>' + makeInput("GRUPO_DEV_WEBCONF", s.grupos.GRUPO_DEV_WEBCONF) + '</div>';
+            html += '</div>';
+
+            // === CONTROLE DE HORARIO ===
+            html += '<div class="settings-section"><h4>Controle de Horario</h4>';
+            html += '<div class="toggle-row"><label>Ativar controle de horario</label>' + makeToggle("ACCESS_HOURS_ENABLED", s.horario.ACCESS_HOURS_ENABLED) + '</div>';
+            html += '<div class="fg"><label>Horario inicio:</label>' + makeInput("ACCESS_HOURS_START", s.horario.ACCESS_HOURS_START, "text", "08:00") + '</div>';
+            html += '<div class="fg"><label>Horario fim:</label>' + makeInput("ACCESS_HOURS_END", s.horario.ACCESS_HOURS_END, "text", "18:00") + '</div>';
+            html += '<div class="toggle-row"><label>Somente dias uteis</label>' + makeToggle("ACCESS_HOURS_WEEKDAYS_ONLY", s.horario.ACCESS_HOURS_WEEKDAYS_ONLY) + '</div>';
+            html += '</div>';
+
+            // === CONTROLE POR AMBIENTE ===
+            html += '<div class="settings-section"><h4>Limites de Acesso Temporario</h4>';
+            html += '<div class="toggle-row"><label>Producao requer aprovacao</label>' + makeToggle("PROD_REQUIRES_APPROVAL", s.controle_ambiente.PROD_REQUIRES_APPROVAL) + '</div>';
+            html += '<div class="fg"><label>Max horas (Production):</label>' + makeInput("PROD_MAX_TEMP_HOURS", s.controle_ambiente.PROD_MAX_TEMP_HOURS, "number") + '</div>';
+            html += '<div class="fg"><label>Max horas (Staging):</label>' + makeInput("STAGING_MAX_TEMP_HOURS", s.controle_ambiente.STAGING_MAX_TEMP_HOURS, "number") + '</div>';
+            html += '<div class="fg"><label>Max horas (Development):</label>' + makeInput("DEV_MAX_TEMP_HOURS", s.controle_ambiente.DEV_MAX_TEMP_HOURS, "number") + '</div>';
+            html += '<div class="fg"><label>Max horas (padrao):</label>' + makeInput("MAX_TEMP_HOURS", s.controle_ambiente.MAX_TEMP_HOURS, "number") + '</div>';
+            html += '</div>';
+
+            // === INATIVIDADE ===
+            html += '<div class="settings-section"><h4>Inatividade e Sessoes</h4>';
+            html += '<div class="fg"><label>Dias para considerar inativo:</label>' + makeInput("INACTIVITY_DAYS", s.inatividade.INACTIVITY_DAYS, "number") + '</div>';
+            html += '<div class="toggle-row"><label>Revogar exec de inativos automaticamente</label>' + makeToggle("AUTO_REVOKE_INACTIVE", s.inatividade.AUTO_REVOKE_INACTIVE) + '</div>';
+            html += '<div class="fg"><label>Max sessoes concorrentes:</label>' + makeInput("MAX_CONCURRENT_SESSIONS", s.inatividade.MAX_CONCURRENT_SESSIONS, "number") + '</div>';
+            html += '</div>';
+
+            // === NOTIFICACOES ===
+            html += '<div class="settings-section"><h4>Notificacoes</h4>';
+            html += '<div class="fg"><label>Webhook URL:</label>' + makeInput("WEBHOOK_URL", s.notificacoes.WEBHOOK_URL, "url", "https://hooks.slack.com/...") + '</div>';
+            html += '<div class="fg"><label>Tipo de Webhook:</label>' + makeSelect("WEBHOOK_TYPE", s.notificacoes.WEBHOOK_TYPE, [
+                { v: "slack", l: "Slack" }, { v: "teams", l: "Microsoft Teams" }, { v: "discord", l: "Discord" }
+            ]) + '</div>';
+            html += '<div class="fg"><label>Email para relatorios:</label>' + makeInput("REPORT_EMAIL", s.notificacoes.REPORT_EMAIL, "email", "admin@empresa.com") + '</div>';
+            html += '<div class="toggle-row"><label>Notificar uso de docker exec</label>' + makeToggle("NOTIFY_ON_EXEC", s.notificacoes.NOTIFY_ON_EXEC) + '</div>';
+            html += '<div class="toggle-row"><label>Notificar acesso temporario</label>' + makeToggle("NOTIFY_ON_TEMP_ACCESS", s.notificacoes.NOTIFY_ON_TEMP_ACCESS) + '</div>';
+            html += '<div class="toggle-row"><label>Notificar solicitacoes</label>' + makeToggle("NOTIFY_ON_REQUEST", s.notificacoes.NOTIFY_ON_REQUEST) + '</div>';
+            html += '<div class="toggle-row"><label>Notificar acoes suspeitas</label>' + makeToggle("NOTIFY_ON_SUSPICIOUS", s.notificacoes.NOTIFY_ON_SUSPICIOUS) + '</div>';
+            html += '</div>';
+
+            // === DOCKER & SEGURANCA ===
+            html += '<div class="settings-section"><h4>Docker e Seguranca</h4>';
+            html += '<div class="fg"><label>Comandos permitidos no exec (um por linha):</label>';
+            html += '<textarea id="s-DOCKER_EXEC_COMMANDS_ALLOWED" class="finput" rows="3" style="resize:vertical">' + esc((s.docker.DOCKER_EXEC_COMMANDS_ALLOWED || []).join("\n")) + '</textarea></div>';
+            html += '<div class="fg"><label>Comandos bloqueados (um por linha):</label>';
+            html += '<textarea id="s-BLOCKED_COMMANDS" class="finput" rows="3" style="resize:vertical">' + esc((s.docker.BLOCKED_COMMANDS || []).join("\n")) + '</textarea></div>';
+            html += '</div>';
+
+            // === DIRETORIOS ===
+            html += '<div class="settings-section"><h4>Diretorios Permitidos</h4>';
+            html += '<div class="fg"><label>Diretorios de log (um por linha):</label>';
+            html += '<textarea id="s-LOG_DIRS_ALLOWED" class="finput" rows="3" style="resize:vertical">' + esc((s.diretorios.LOG_DIRS_ALLOWED || []).join("\n")) + '</textarea></div>';
+            html += '<div class="fg"><label>Diretorios webconf (um por linha):</label>';
+            html += '<textarea id="s-WEBCONF_DIRS_ALLOWED" class="finput" rows="3" style="resize:vertical">' + esc((s.diretorios.WEBCONF_DIRS_ALLOWED || []).join("\n")) + '</textarea></div>';
+            html += '<div class="fg"><label>Servicos webconf (um por linha):</label>';
+            html += '<textarea id="s-WEBCONF_SERVICES_ALLOWED" class="finput" rows="2" style="resize:vertical">' + esc((s.diretorios.WEBCONF_SERVICES_ALLOWED || []).join("\n")) + '</textarea></div>';
+            html += '</div>';
+
+            // === CAMINHOS (read-only info) ===
+            html += '<div class="settings-section"><h4>Caminhos do Sistema</h4>';
+            var paths = s.caminhos || {};
+            var pathKeys = [
+                ["SUDO_FILE", "Arquivo sudoers"],
+                ["BACKUP_DIR", "Diretorio de backups"],
+                ["LOG_FILE", "Arquivo de log"],
+                ["AUDIT_LOG_DIR", "Diretorio de auditoria"],
+                ["SESSION_LOG_DIR", "Diretorio de sessoes"],
+                ["TEMP_ACCESS_DIR", "Diretorio de acesso temp"],
+                ["REQUESTS_DIR", "Diretorio de solicitacoes"],
+                ["DOCKER_WRAPPER_PATH", "Docker wrapper"],
+                ["CRON_FILE", "Arquivo cron"]
+            ];
+            html += '<div class="ilist">';
+            pathKeys.forEach(function (p) {
+                var val = paths[p[0]] || "";
+                html += '<div class="irow"><span class="ilabel">' + esc(p[1]) + ':</span><span style="font-family:monospace;font-size:12px">' + esc(val || "(padrao)") + '</span></div>';
+            });
+            html += '</div>';
+            html += '</div>';
+
+            $("settings-container").innerHTML = html;
+        }).catch(function (err) {
+            $("settings-container").innerHTML = '<p class="muted">Erro: ' + esc(String(err)) + '</p>';
+        });
+    }
+
+    function saveSettings() {
+        // Collect all settings values
+        var booleans = [
+            "AUTO_CREATE_USERS", "AUTO_CREATE_GROUPS",
+            "ACCESS_HOURS_ENABLED", "ACCESS_HOURS_WEEKDAYS_ONLY",
+            "PROD_REQUIRES_APPROVAL", "AUTO_REVOKE_INACTIVE",
+            "NOTIFY_ON_EXEC", "NOTIFY_ON_TEMP_ACCESS", "NOTIFY_ON_REQUEST", "NOTIFY_ON_SUSPICIOUS"
+        ];
+        var strings = [
+            "ENVIRONMENT", "DEFAULT_SHELL",
+            "GRUPO_DEV", "GRUPO_DEV_EXEC", "GRUPO_DEV_WEBCONF",
+            "ACCESS_HOURS_START", "ACCESS_HOURS_END",
+            "PROD_MAX_TEMP_HOURS", "STAGING_MAX_TEMP_HOURS", "DEV_MAX_TEMP_HOURS", "MAX_TEMP_HOURS",
+            "INACTIVITY_DAYS", "MAX_CONCURRENT_SESSIONS",
+            "WEBHOOK_URL", "WEBHOOK_TYPE", "REPORT_EMAIL"
+        ];
+
+        var lines = [];
+        booleans.forEach(function (key) {
+            var el = $("s-" + key);
+            if (el) lines.push(key + "=" + (el.checked ? "true" : "false"));
+        });
+        strings.forEach(function (key) {
+            var el = $("s-" + key);
+            if (el) lines.push(key + "=" + el.value);
+        });
+
+        var payload = lines.join("\n");
+
+        openModal("Salvar Configuracoes", "<p>Salvar todas as configuracoes? Um backup sera criado antes.</p>", "Salvar", function () {
+            showLoading();
+            manager("backup").then(function () {
+                return helper("save-settings", [payload]);
+            }).then(function (res) {
+                hideLoading();
+                if (res.status === "ok") {
+                    showAlert("Configuracoes salvas! Execute 'Aplicar Configuracao' para efetivar.", "success");
+                } else {
+                    showAlert("Erro: " + (res.message || ""), "danger");
+                }
+            }).catch(function (err) {
+                hideLoading();
+                showAlert("Erro ao salvar: " + err, "danger");
+            });
+        });
+    }
+
+    $("btn-save-settings").onclick = saveSettings;
+
+    /* ================================================================
      * TAB: MAINTENANCE
      * ================================================================ */
 
@@ -623,13 +798,47 @@
                 el.innerHTML = '<p class="muted">Nenhum backup encontrado.</p>';
                 return;
             }
-            var html = '<div class="ilist">';
+            var html = '';
             backups.forEach(function (b) {
-                html += '<div class="irow"><span class="ilabel">' + esc(b.name) + '</span><span class="muted">' + esc(b.size) + '</span></div>';
+                html += '<div class="backup-item">';
+                html += '<div class="backup-info"><div class="backup-name">' + esc(b.name) + '</div><div class="backup-size">' + esc(b.size) + '</div></div>';
+                html += '<button class="btn btn-xs btn-secondary" data-restore="' + esc(b.name) + '">Restaurar</button>';
+                html += '</div>';
             });
-            html += '</div>';
             el.innerHTML = html;
+
+            // Bind restore buttons
+            document.querySelectorAll("[data-restore]").forEach(function (btn) {
+                btn.onclick = function () {
+                    var name = btn.getAttribute("data-restore");
+                    doRestoreBackup(name);
+                };
+            });
         });
+    }
+
+    function doRestoreBackup(name) {
+        openDangerModal(
+            "Restaurar Backup",
+            "<p>Restaurar o backup <strong>" + esc(name) + "</strong>?</p>" +
+            "<p class='muted'>Um backup de seguranca sera criado antes da restauracao. " +
+            "Apos restaurar, execute 'Aplicar Configuracao' para efetivar.</p>",
+            "Restaurar",
+            function () {
+                showLoading();
+                manager("restore-backup", "--user", name).then(function (res) {
+                    hideLoading();
+                    $("maint-output").textContent = res.output || res.message || "Concluido.";
+                    if (res.status === "ok") {
+                        showAlert("Backup restaurado com sucesso!", "success");
+                    } else {
+                        showAlert("Erro na restauracao: " + (res.output || ""), "danger");
+                    }
+                    loadBackups();
+                    loadDashboard();
+                });
+            }
+        );
     }
 
     function runMaintenanceAction(action) {
@@ -665,7 +874,7 @@
     });
 
     /* ================================================================
-     * TAB: CONFIG
+     * TAB: CONFIG (raw editor)
      * ================================================================ */
 
     function loadConfig() {
@@ -684,7 +893,6 @@
         var content = $("config-editor").value;
         openModal("Salvar Configuracao", "<p>Salvar alteracoes? Um backup sera criado automaticamente.</p>", "Salvar", function () {
             showLoading();
-            // Backup first
             manager("backup").then(function () {
                 return writeFile(CONFIG_PATH, content);
             }).then(function () {
@@ -716,6 +924,7 @@
             case "teams": loadTeams(); break;
             case "temp-access": loadTempAccess(); break;
             case "requests": loadRequests(); break;
+            case "settings": loadSettings(); break;
             case "maintenance": loadBackups(); break;
             case "config": loadConfig(); break;
         }

@@ -28,8 +28,9 @@
         <button class="tab-btn" data-tab="temp-access">Acesso Temporario</button>
         <button class="tab-btn" data-tab="requests">Solicitacoes</button>
         <button class="tab-btn" data-tab="audit">Auditoria</button>
+        <button class="tab-btn" data-tab="settings">Configuracoes</button>
         <button class="tab-btn" data-tab="maintenance">Manutencao</button>
-        <button class="tab-btn" data-tab="config">Configuracao</button>
+        <button class="tab-btn" data-tab="config">Editor Config</button>
     </nav>
 
     <!-- Loading overlay -->
@@ -215,6 +216,18 @@
         </div>
     </div>
 
+    <!-- ===== Tab: Settings ===== -->
+    <div id="tab-settings" class="tab-content">
+        <div class="toolbar">
+            <span class="muted">Configuracoes estruturadas do sistema</span>
+            <div class="toolbar-spacer"></div>
+            <button id="btn-save-settings" class="btn btn-primary">Salvar Configuracoes</button>
+        </div>
+        <div id="settings-container" class="settings-grid">
+            <p class="muted">Carregando...</p>
+        </div>
+    </div>
+
     <!-- ===== Tab: Maintenance ===== -->
     <div id="tab-maintenance" class="tab-content">
         <div class="maint-grid">
@@ -290,7 +303,7 @@
         </div>
     </div>
 
-    <!-- ===== Tab: Config ===== -->
+    <!-- ===== Tab: Config (Editor Raw) ===== -->
     <div id="tab-config" class="tab-content">
         <div class="toolbar">
             <span id="config-path" class="muted">---</span>

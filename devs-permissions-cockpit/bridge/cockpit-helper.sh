@@ -434,6 +434,156 @@ cmd_save_config() {
 }
 
 #===============================================================================
+# COMANDOS - SETTINGS (parser estruturado do config)
+#===============================================================================
+
+_cfg_val() {
+    # Extrai valor de uma variável do config. Suporta "valor" e valor sem aspas
+    local var="$1"
+    local val
+    val=$(grep -m1 "^${var}=" "$CONFIG_FILE" 2>/dev/null | sed "s/^${var}=\"\\?\\([^\"]*\\)\"\\?/\\1/")
+    echo "$val"
+}
+
+_cfg_bool() {
+    local val
+    val=$(_cfg_val "$1")
+    [[ "$val" == "true" ]] && echo "true" || echo "false"
+}
+
+_cfg_array_inline() {
+    # Retorna array como JSON: ["val1","val2"]
+    local var="$1"
+    local line
+    line=$(sed -n "/^${var}=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | tr '\n' ' ')
+    if [[ -z "$line" ]]; then
+        echo "[]"
+        return
+    fi
+    local json="["
+    local first=true
+    while IFS= read -r item; do
+        item=$(echo "$item" | sed 's/^[[:space:]]*"//;s/"[[:space:]]*$//')
+        [[ -z "$item" || "$item" == "(" || "$item" == ")" ]] && continue
+        [[ "$first" != true ]] && json+=","
+        first=false
+        json+=$(json_string "$item")
+    done < <(sed -n "/^${var}=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep '"' | sed 's/.*"\([^"]*\)".*/\1/')
+    json+="]"
+    echo "$json"
+}
+
+cmd_get_settings() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo '{"status":"error","message":"Config file not found"}'
+        return 1
+    fi
+
+    cat <<SETTINGS_EOF
+{
+    "status": "ok",
+    "ambiente": {
+        "ENVIRONMENT": $(json_string "$(_cfg_val ENVIRONMENT)"),
+        "AUTO_CREATE_USERS": $(_cfg_bool AUTO_CREATE_USERS),
+        "AUTO_CREATE_GROUPS": $(_cfg_bool AUTO_CREATE_GROUPS),
+        "DEFAULT_SHELL": $(json_string "$(_cfg_val DEFAULT_SHELL)")
+    },
+    "horario": {
+        "ACCESS_HOURS_ENABLED": $(_cfg_bool ACCESS_HOURS_ENABLED),
+        "ACCESS_HOURS_START": $(json_string "$(_cfg_val ACCESS_HOURS_START)"),
+        "ACCESS_HOURS_END": $(json_string "$(_cfg_val ACCESS_HOURS_END)"),
+        "ACCESS_HOURS_WEEKDAYS_ONLY": $(_cfg_bool ACCESS_HOURS_WEEKDAYS_ONLY)
+    },
+    "controle_ambiente": {
+        "PROD_REQUIRES_APPROVAL": $(_cfg_bool PROD_REQUIRES_APPROVAL),
+        "PROD_MAX_TEMP_HOURS": $(json_string "$(_cfg_val PROD_MAX_TEMP_HOURS)"),
+        "STAGING_MAX_TEMP_HOURS": $(json_string "$(_cfg_val STAGING_MAX_TEMP_HOURS)"),
+        "DEV_MAX_TEMP_HOURS": $(json_string "$(_cfg_val DEV_MAX_TEMP_HOURS)"),
+        "MAX_TEMP_HOURS": $(json_string "$(_cfg_val MAX_TEMP_HOURS)")
+    },
+    "inatividade": {
+        "INACTIVITY_DAYS": $(json_string "$(_cfg_val INACTIVITY_DAYS)"),
+        "AUTO_REVOKE_INACTIVE": $(_cfg_bool AUTO_REVOKE_INACTIVE),
+        "MAX_CONCURRENT_SESSIONS": $(json_string "$(_cfg_val MAX_CONCURRENT_SESSIONS)")
+    },
+    "notificacoes": {
+        "WEBHOOK_URL": $(json_string "$(_cfg_val WEBHOOK_URL)"),
+        "WEBHOOK_TYPE": $(json_string "$(_cfg_val WEBHOOK_TYPE)"),
+        "NOTIFY_ON_EXEC": $(_cfg_bool NOTIFY_ON_EXEC),
+        "NOTIFY_ON_TEMP_ACCESS": $(_cfg_bool NOTIFY_ON_TEMP_ACCESS),
+        "NOTIFY_ON_REQUEST": $(_cfg_bool NOTIFY_ON_REQUEST),
+        "NOTIFY_ON_SUSPICIOUS": $(_cfg_bool NOTIFY_ON_SUSPICIOUS),
+        "REPORT_EMAIL": $(json_string "$(_cfg_val REPORT_EMAIL)")
+    },
+    "grupos": {
+        "GRUPO_DEV": $(json_string "$(_cfg_val GRUPO_DEV)"),
+        "GRUPO_DEV_EXEC": $(json_string "$(_cfg_val GRUPO_DEV_EXEC)"),
+        "GRUPO_DEV_WEBCONF": $(json_string "$(_cfg_val GRUPO_DEV_WEBCONF)")
+    },
+    "docker": {
+        "DOCKER_EXEC_COMMANDS_ALLOWED": $(_cfg_array_inline DOCKER_EXEC_COMMANDS_ALLOWED),
+        "DOCKER_LOGS_PATTERNS": $(_cfg_array_inline DOCKER_LOGS_PATTERNS),
+        "DOCKER_CONTAINER_PATTERNS": $(_cfg_array_inline DOCKER_CONTAINER_PATTERNS),
+        "BLOCKED_COMMANDS": $(_cfg_array_inline BLOCKED_COMMANDS)
+    },
+    "diretorios": {
+        "LOG_DIRS_ALLOWED": $(_cfg_array_inline LOG_DIRS_ALLOWED),
+        "WEBCONF_DIRS_ALLOWED": $(_cfg_array_inline WEBCONF_DIRS_ALLOWED),
+        "WEBCONF_SERVICES_ALLOWED": $(_cfg_array_inline WEBCONF_SERVICES_ALLOWED)
+    },
+    "caminhos": {
+        "SUDO_FILE": $(json_string "$(_cfg_val SUDO_FILE)"),
+        "BACKUP_DIR": $(json_string "$(_cfg_val BACKUP_DIR)"),
+        "LOG_FILE": $(json_string "$(_cfg_val LOG_FILE)"),
+        "AUDIT_LOG_DIR": $(json_string "$(_cfg_val AUDIT_LOG_DIR)"),
+        "SESSION_LOG_DIR": $(json_string "$(_cfg_val SESSION_LOG_DIR)"),
+        "TEMP_ACCESS_DIR": $(json_string "$(_cfg_val TEMP_ACCESS_DIR)"),
+        "REQUESTS_DIR": $(json_string "$(_cfg_val REQUESTS_DIR)"),
+        "DOCKER_WRAPPER_PATH": $(json_string "$(_cfg_val DOCKER_WRAPPER_PATH)"),
+        "CRON_FILE": $(json_string "$(_cfg_val CRON_FILE)")
+    }
+}
+SETTINGS_EOF
+}
+
+cmd_save_settings() {
+    # Recebe JSON com chave=valor e atualiza o config file
+    # Formato: key1=value1\nkey2=value2
+    local updates="$1"
+    if [[ -z "$updates" ]]; then
+        echo '{"status":"error","message":"No settings provided"}'
+        return 1
+    fi
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo '{"status":"error","message":"Config file not found"}'
+        return 1
+    fi
+
+    # Backup antes de alterar
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+
+    local count=0
+    while IFS='=' read -r key value; do
+        [[ -z "$key" ]] && continue
+        key=$(echo "$key" | sed 's/[^A-Za-z0-9_]//g')
+        [[ -z "$key" ]] && continue
+
+        if grep -q "^${key}=" "$CONFIG_FILE"; then
+            # Boolean values: no quotes
+            if [[ "$value" == "true" || "$value" == "false" ]]; then
+                sed -i "s|^${key}=.*|${key}=${value}|" "$CONFIG_FILE"
+            else
+                sed -i "s|^${key}=.*|${key}=\"${value}\"|" "$CONFIG_FILE"
+            fi
+            ((count++))
+        fi
+    done <<< "$updates"
+
+    echo "{\"status\":\"ok\",\"message\":\"$count settings updated\"}"
+}
+
+#===============================================================================
 # COMANDOS - EXECUTAR MANAGER (proxy seguro)
 #===============================================================================
 
@@ -532,6 +682,8 @@ main() {
         list-backups)      cmd_list_backups ;;
         get-config)        cmd_get_config ;;
         save-config)       cmd_save_config "$*" ;;
+        get-settings)      cmd_get_settings ;;
+        save-settings)     cmd_save_settings "$*" ;;
         check-install)     cmd_check_install ;;
 
         # Proxy para o manager (todas as ações de escrita)

@@ -106,6 +106,11 @@ GRUPO_DEV="devs"
 GRUPO_DEV_EXEC="devs_exec"
 GRUPO_DEV_WEBCONF="devs_webconf"
 
+# Comportamento automatico
+AUTO_CREATE_USERS=true
+AUTO_CREATE_GROUPS=true
+DEFAULT_SHELL="/bin/bash"
+
 # Docker socket
 DOCKER_SOCKET="/var/run/docker.sock"
 
@@ -113,9 +118,25 @@ DOCKER_SOCKET="/var/run/docker.sock"
 ENABLE_AUDIT="true"
 AUDIT_LOG_DIR="/var/log/devs_audit"
 
-# Acesso temporario padrao (horas)
-DEFAULT_TEMP_HOURS=4
-MAX_TEMP_HOURS=24
+# Controle por ambiente
+PROD_REQUIRES_APPROVAL=true
+PROD_MAX_TEMP_HOURS=4
+STAGING_MAX_TEMP_HOURS=8
+DEV_MAX_TEMP_HOURS=24
+MAX_TEMP_HOURS=8
+
+# Inatividade
+INACTIVITY_DAYS=30
+AUTO_REVOKE_INACTIVE=false
+
+# Notificacoes (configure o webhook do seu Slack/Teams/Discord)
+WEBHOOK_URL=""
+WEBHOOK_TYPE="slack"
+NOTIFY_ON_EXEC=false
+NOTIFY_ON_TEMP_ACCESS=true
+NOTIFY_ON_REQUEST=true
+NOTIFY_ON_SUSPICIOUS=true
+REPORT_EMAIL=""
 
 # Times (exemplo - edite conforme necessario)
 TEAMS=(
