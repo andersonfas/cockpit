@@ -246,8 +246,11 @@
             var html = "";
             users.forEach(function (u) {
                 var r = u.has_temp ? timeRemaining(u.temp_expires) : { text: "-", active: false };
-                html += "<tr>";
-                html += '<td class="uname">' + esc(u.name) + "</td>";
+                var locked = u.locked === true;
+                html += "<tr" + (locked ? ' style="opacity:0.6"' : "") + ">";
+                html += '<td class="uname">' + esc(u.name);
+                if (locked) html += ' <span class="badge bg-red">Desativado</span>';
+                html += "</td>";
                 html += "<td>" + (u.basic ? '<span class="ck-yes">&#10003;</span>' : '<span class="ck-no">-</span>') + "</td>";
                 html += "<td>" + (u.exec ? '<span class="ck-yes">&#10003;</span>' : '<span class="ck-no">-</span>') + "</td>";
                 html += "<td>" + (u.webconf ? '<span class="ck-yes">&#10003;</span>' : '<span class="ck-no">-</span>') + "</td>";
@@ -259,13 +262,18 @@
                 }
                 html += "<td>" + esc(u.last_login || "-") + "</td>";
                 html += '<td class="actions">';
-                if (!u.exec) {
-                    html += '<button class="btn btn-xs btn-success" data-act="promote" data-user="' + esc(u.name) + '">Promover</button> ';
+                if (locked) {
+                    html += '<button class="btn btn-xs btn-success" data-act="enable-user" data-user="' + esc(u.name) + '">Ativar</button> ';
                 } else {
-                    html += '<button class="btn btn-xs btn-warning" data-act="demote" data-user="' + esc(u.name) + '">Rebaixar</button> ';
-                }
-                if (!u.webconf) {
-                    html += '<button class="btn btn-xs btn-outline" data-act="add-webconf" data-user="' + esc(u.name) + '">+WebConf</button> ';
+                    if (!u.exec) {
+                        html += '<button class="btn btn-xs btn-success" data-act="promote" data-user="' + esc(u.name) + '">Promover</button> ';
+                    } else {
+                        html += '<button class="btn btn-xs btn-warning" data-act="demote" data-user="' + esc(u.name) + '">Rebaixar</button> ';
+                    }
+                    if (!u.webconf) {
+                        html += '<button class="btn btn-xs btn-outline" data-act="add-webconf" data-user="' + esc(u.name) + '">+WebConf</button> ';
+                    }
+                    html += '<button class="btn btn-xs btn-secondary" data-act="disable-user" data-user="' + esc(u.name) + '">Desativar</button> ';
                 }
                 html += '<button class="btn btn-xs btn-danger" data-act="remove-user" data-user="' + esc(u.name) + '">Remover</button>';
                 html += '</td></tr>';
@@ -287,6 +295,8 @@
                     case "demote": doDemote(user); break;
                     case "add-webconf": doAddWebconf(user); break;
                     case "remove-user": doRemoveUser(user); break;
+                    case "disable-user": doDisableUser(user); break;
+                    case "enable-user": doEnableUser(user); break;
                 }
             };
         });
@@ -359,6 +369,28 @@
             manager("remove-user", "--user", user).then(function (res) {
                 hideLoading();
                 showAlert(res.output || user + " removido.", res.status === "ok" ? "success" : "danger");
+                loadUsers(); loadDashboard();
+            });
+        });
+    }
+
+    function doDisableUser(user) {
+        openDangerModal("Desativar Usuario", "<p>Desativar <strong>" + esc(user) + "</strong>?</p><p class='muted'>A conta sera bloqueada e removida de todos os grupos. Pode ser reativada depois.</p>", "Desativar", function () {
+            showLoading();
+            manager("disable-user", "--user", user).then(function (res) {
+                hideLoading();
+                showAlert(res.output || user + " desativado.", res.status === "ok" ? "success" : "danger");
+                loadUsers(); loadDashboard();
+            });
+        });
+    }
+
+    function doEnableUser(user) {
+        openModal("Ativar Usuario", "<p>Reativar a conta de <strong>" + esc(user) + "</strong>?</p><p class='muted'>A conta sera desbloqueada e adicionada ao grupo basico.</p>", "Ativar", function () {
+            showLoading();
+            manager("enable-user", "--user", user).then(function (res) {
+                hideLoading();
+                showAlert(res.output || user + " ativado.", res.status === "ok" ? "success" : "danger");
                 loadUsers(); loadDashboard();
             });
         });

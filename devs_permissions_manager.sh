@@ -3574,6 +3574,76 @@ cmd_remove_user() {
     log_ok "Permissões removidas: $CMD_USER"
 }
 
+# Comando: disable-user (bloqueia conta + remove de todos os grupos)
+cmd_disable_user() {
+    if [[ -z "$CMD_USER" ]]; then
+        log_error "Use --user NOME"
+        return 1
+    fi
+
+    if ! user_exists "$CMD_USER"; then
+        log_error "Usuário não existe: $CMD_USER"
+        return 1
+    fi
+
+    log_info "Desativando usuário: $CMD_USER"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log_dry "usermod -L $CMD_USER"
+        return 0
+    fi
+
+    # Remove de todos os grupos de permissão
+    remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+    remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
+    remove_user_from_group "$CMD_USER" "$GRUPO_DEV"
+
+    # Remove acesso temporário
+    rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.expiry" 2>/dev/null
+    rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.reason" 2>/dev/null
+
+    # Bloqueia a conta no sistema (impede login)
+    usermod -L "$CMD_USER" 2>/dev/null && log_ok "Conta bloqueada: $CMD_USER" || log_warn "Não foi possível bloquear conta"
+
+    # Expira a conta
+    usermod --expiredate 1 "$CMD_USER" 2>/dev/null
+
+    audit_log "USER_DISABLED" "root" "user=$CMD_USER"
+    log_ok "Usuário desativado: $CMD_USER"
+}
+
+# Comando: enable-user (desbloqueia conta + adiciona ao grupo básico)
+cmd_enable_user() {
+    if [[ -z "$CMD_USER" ]]; then
+        log_error "Use --user NOME"
+        return 1
+    fi
+
+    if ! user_exists "$CMD_USER"; then
+        log_error "Usuário não existe: $CMD_USER"
+        return 1
+    fi
+
+    log_info "Reativando usuário: $CMD_USER"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log_dry "usermod -U $CMD_USER"
+        return 0
+    fi
+
+    # Desbloqueia a conta
+    usermod -U "$CMD_USER" 2>/dev/null && log_ok "Conta desbloqueada: $CMD_USER" || log_warn "Não foi possível desbloquear conta"
+
+    # Remove expiração
+    usermod --expiredate "" "$CMD_USER" 2>/dev/null
+
+    # Adiciona ao grupo básico
+    add_user_to_group "$CMD_USER" "$GRUPO_DEV"
+
+    audit_log "USER_ENABLED" "root" "user=$CMD_USER"
+    log_ok "Usuário reativado: $CMD_USER"
+}
+
 # Comando: reset-user
 cmd_reset_user() {
     if [[ -z "$CMD_USER" ]]; then
@@ -4166,6 +4236,8 @@ main() {
             ;;
         add-user)        cmd_add_user ;;
         remove-user)     cmd_remove_user ;;
+        disable-user)    cmd_disable_user ;;
+        enable-user)     cmd_enable_user ;;
         reset-user)      cmd_reset_user ;;
         delete-user)     cmd_delete_user ;;
         promote)         cmd_promote ;;

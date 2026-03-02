@@ -238,8 +238,15 @@ cmd_list_users() {
         local last_login=""
         last_login=$(lastlog -u "$user" 2>/dev/null | tail -1 | awk '{if ($2 != "**Never") print $4,$5,$6,$7,$9; else print "never"}' || echo "unknown")
 
+        # Verificar se conta está bloqueada
+        local is_locked=false
+        local pw_status
+        pw_status=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
+        [[ "$pw_status" == "L" || "$pw_status" == "LK" ]] && is_locked=true
+
         json+="{\"name\":$(json_string "$user")"
         json+=",\"basic\":${is_basic},\"exec\":${is_exec},\"webconf\":${is_webconf}"
+        json+=",\"locked\":${is_locked}"
         json+=",\"teams\":$(json_string "$user_teams")"
         json+=",\"has_temp\":${has_temp}"
         json+=",\"temp_expires\":$(json_string "$temp_expires")"
