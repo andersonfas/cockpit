@@ -191,6 +191,24 @@ do_install() {
     # Garantir config base existe
     ensure_config
 
+    # SELinux: restaurar contextos se SELinux está ativo
+    if command -v getenforce &>/dev/null && [[ "$(getenforce 2>/dev/null)" != "Disabled" ]]; then
+        info "SELinux detectado, restaurando contextos..."
+        restorecon -R "$COCKPIT_DIR" 2>/dev/null || true
+        restorecon -R "$LIBEXEC_DIR" 2>/dev/null || true
+        restorecon -R "$CONFIG_DIR" 2>/dev/null || true
+        # Permitir que o helper seja executado pelo cockpit-ws
+        if command -v semanage &>/dev/null; then
+            semanage fcontext -a -t cockpit_ws_exec_t "${LIBEXEC_DIR}/cockpit-helper.sh" 2>/dev/null || true
+            restorecon -v "${LIBEXEC_DIR}/cockpit-helper.sh" 2>/dev/null || true
+        fi
+        if command -v setsebool &>/dev/null; then
+            # Permitir cockpit executar scripts e acessar network
+            setsebool -P cockpit_enable_shell 1 2>/dev/null || true
+        fi
+        info "Contextos SELinux aplicados."
+    fi
+
     # Restart cockpit
     info "Reiniciando Cockpit..."
     systemctl try-restart cockpit.socket 2>/dev/null || warn "Nao foi possivel reiniciar cockpit.socket"

@@ -57,8 +57,15 @@ sanitize_input() {
 
 sanitize_reason() {
     local input="$1"
-    # Para motivos, permite mais caracteres mas remove aspas e backticks
-    echo "$input" | sed "s/['\"\`\$]//g" | head -c 200
+    # Para motivos, permite mais caracteres mas remove metacaracteres shell
+    echo "$input" | sed "s/['\"\`\$|;&<>()!{}]//g" | head -c 200
+}
+
+sanitize_config_value() {
+    local input="$1"
+    # Remove metacaracteres shell que poderiam ser executados ao fazer source do config
+    # Permite: alfanuméricos, espaços, ponto, hífen, underscore, barra, dois-pontos, arroba, vírgula
+    echo "$input" | sed 's/[`$();&|!<>{}\\]//g' | sed "s/['\"]//g" | head -c 500
 }
 
 load_config_vars() {
@@ -430,6 +437,12 @@ cmd_save_config() {
         return 1
     fi
 
+    # Rejeitar conteúdo com padrões perigosos de injeção shell
+    if echo "$content" | grep -qE '(\$\(|`|;\s*(rm|curl|wget|nc|bash|sh|python|perl|ruby)\b)'; then
+        echo '{"status":"error","message":"Config content contains potentially dangerous shell patterns"}'
+        return 1
+    fi
+
     # Backup antes de salvar
     if [[ -f "$CONFIG_FILE" ]]; then
         local backup_file="${CONFIG_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
@@ -571,17 +584,40 @@ cmd_save_settings() {
     # Backup antes de alterar
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
 
+    # Whitelist de chaves que podem ser alteradas via settings UI
+    local -r ALLOWED_SETTINGS=(
+        "ENVIRONMENT" "DEFAULT_SHELL" "AUTO_CREATE_USERS" "AUTO_CREATE_GROUPS"
+        "GRUPO_DEV" "GRUPO_DEV_EXEC" "GRUPO_DEV_WEBCONF"
+        "ACCESS_HOURS_ENABLED" "ACCESS_HOURS_START" "ACCESS_HOURS_END" "ACCESS_HOURS_WEEKDAYS_ONLY"
+        "PROD_REQUIRES_APPROVAL" "PROD_MAX_TEMP_HOURS" "STAGING_MAX_TEMP_HOURS" "DEV_MAX_TEMP_HOURS" "MAX_TEMP_HOURS"
+        "INACTIVITY_DAYS" "AUTO_REVOKE_INACTIVE" "MAX_CONCURRENT_SESSIONS"
+        "WEBHOOK_URL" "WEBHOOK_TYPE" "REPORT_EMAIL"
+        "NOTIFY_ON_EXEC" "NOTIFY_ON_TEMP_ACCESS" "NOTIFY_ON_REQUEST" "NOTIFY_ON_SUSPICIOUS"
+    )
+
     local count=0
     while IFS='=' read -r key value; do
         [[ -z "$key" ]] && continue
         key=$(echo "$key" | sed 's/[^A-Za-z0-9_]//g')
         [[ -z "$key" ]] && continue
 
+        # Verificar se a chave está na whitelist
+        local key_allowed=false
+        for allowed in "${ALLOWED_SETTINGS[@]}"; do
+            if [[ "$key" == "$allowed" ]]; then
+                key_allowed=true
+                break
+            fi
+        done
+        [[ "$key_allowed" == false ]] && continue
+
         if grep -q "^${key}=" "$CONFIG_FILE"; then
-            # Boolean values: no quotes
+            # Boolean values: no quotes, valor fixo
             if [[ "$value" == "true" || "$value" == "false" ]]; then
                 sed -i "s|^${key}=.*|${key}=${value}|" "$CONFIG_FILE"
             else
+                # Sanitiza valor antes de escrever
+                value=$(sanitize_config_value "$value")
                 sed -i "s|^${key}=.*|${key}=\"${value}\"|" "$CONFIG_FILE"
             fi
             ((count++))
@@ -602,9 +638,41 @@ cmd_run_manager() {
         return 1
     fi
 
+    # Whitelist de subcomandos permitidos via Cockpit
+    local -r ALLOWED_COMMANDS=(
+        "add-user" "remove-user" "disable-user" "enable-user"
+        "promote" "demote" "reset-user"
+        "grant-temp" "revoke-temp"
+        "approve" "deny"
+        "apply" "sync" "cleanup" "backup" "restore-backup"
+        "audit-report" "session-report" "health-check" "inactive-users"
+    )
+
+    # Whitelist de flags permitidas
+    local -r ALLOWED_FLAGS=(
+        "--user" "-u" "--reason" "--hours" "-H"
+        "--request-id" "--days" "--format" "--exec" "--webconf"
+        "--dry-run" "--verbose"
+    )
+
+    # Valida subcomando (primeiro argumento)
+    local subcmd="${1:-}"
+    shift || true
+    local cmd_allowed=false
+    for allowed in "${ALLOWED_COMMANDS[@]}"; do
+        if [[ "$subcmd" == "$allowed" ]]; then
+            cmd_allowed=true
+            break
+        fi
+    done
+    if [[ "$cmd_allowed" == false ]]; then
+        echo '{"status":"error","message":"Command not allowed: '"$(json_escape "$subcmd")"'"}'
+        return 1
+    fi
+
     # Sanitiza argumentos: usernames e valores que vão para o manager
-    local sanitized_args=("--force" "--config" "$CONFIG_FILE")
-    local expect_user=false expect_reason=false expect_hours=false
+    local sanitized_args=("$subcmd" "--force" "--config" "$CONFIG_FILE")
+    local expect_user=false expect_reason=false expect_hours=false expect_value=false
     for arg in "$@"; do
         if [[ "$expect_user" == true ]]; then
             sanitized_args+=("$(sanitize_input "$arg")")
@@ -621,12 +689,21 @@ cmd_run_manager() {
                 return 1
             fi
             expect_hours=false
+        elif [[ "$expect_value" == true ]]; then
+            sanitized_args+=("$(sanitize_input "$arg")")
+            expect_value=false
         else
             case "$arg" in
-                --user|-u)  sanitized_args+=("$arg"); expect_user=true ;;
-                --reason)   sanitized_args+=("$arg"); expect_reason=true ;;
-                --hours|-H) sanitized_args+=("$arg"); expect_hours=true ;;
-                -*)         sanitized_args+=("$arg") ;;
+                --user|-u)       sanitized_args+=("$arg"); expect_user=true ;;
+                --reason)        sanitized_args+=("$arg"); expect_reason=true ;;
+                --hours|-H)      sanitized_args+=("$arg"); expect_hours=true ;;
+                --request-id|--days|--format) sanitized_args+=("$arg"); expect_value=true ;;
+                --exec|--webconf|--dry-run|--verbose) sanitized_args+=("$arg") ;;
+                -*)
+                    # Flag desconhecida: rejeitar
+                    echo '{"status":"error","message":"Flag not allowed: '"$(json_escape "$arg")"'"}'
+                    return 1
+                    ;;
                 *)          sanitized_args+=("$(sanitize_input "$arg")") ;;
             esac
         fi

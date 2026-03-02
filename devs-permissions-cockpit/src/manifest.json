@@ -3,10 +3,18 @@
     "require": {
         "cockpit": "264"
     },
+    "bridges": [
+        {
+            "match": { "superuser": "require" },
+            "spawn": ["/usr/libexec/devs-permissions/cockpit-helper.sh"],
+            "environ": ["LANG"]
+        }
+    ],
     "menu": {
         "index": {
             "label": "DevOps Permissions",
             "order": 85,
+            "superuser": "require",
             "keywords": [
                 {
                     "matches": ["devs", "permissions", "docker", "developers", "access", "teams", "exec", "webconf", "audit"]
@@ -14,5 +22,5 @@
             ]
         }
     },
-    "content-security-policy": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; img-src 'self' data:"
+    "content-security-policy": "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:"
 }
