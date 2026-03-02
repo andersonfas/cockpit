@@ -317,7 +317,7 @@ cmd_list_teams() {
 
     if [[ -f "$CONFIG_FILE" ]]; then
         local teams
-        teams=$(sed -n '/^TEAMS=(/,/)/p' "$CONFIG_FILE" 2>/dev/null | grep '"' | sed 's/.*"\(.*\)".*/\1/')
+        teams=$(sed -n '/^TEAMS=(/,/)/p' "$CONFIG_FILE" 2>/dev/null | grep -v '^\s*#' | grep '"' | sed 's/.*"\(.*\)".*/\1/')
 
         while IFS= read -r team; do
             [[ -z "$team" ]] && continue
@@ -325,9 +325,9 @@ cmd_list_teams() {
             first=false
 
             local users containers webconf_patterns
-            users=$(sed -n "/^TEAM_${team}_USERS=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep '"' | sed 's/.*"\(.*\)".*/\1/')
-            containers=$(sed -n "/^TEAM_${team}_CONTAINERS=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep '"' | sed 's/.*"\(.*\)".*/\1/')
-            webconf_patterns=$(sed -n "/^TEAM_${team}_WEBCONF_PATTERNS=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep '"' | sed 's/.*"\(.*\)".*/\1/')
+            users=$(sed -n "/^TEAM_${team}_USERS=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep -v '^\s*#' | grep '"' | sed 's/.*"\(.*\)".*/\1/')
+            containers=$(sed -n "/^TEAM_${team}_CONTAINERS=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep -v '^\s*#' | grep '"' | sed 's/.*"\(.*\)".*/\1/')
+            webconf_patterns=$(sed -n "/^TEAM_${team}_WEBCONF_PATTERNS=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep -v '^\s*#' | grep '"' | sed 's/.*"\(.*\)".*/\1/')
 
             # Converter para arrays JSON
             local users_arr='['
@@ -468,7 +468,7 @@ _cfg_array_inline() {
         [[ "$first" != true ]] && json+=","
         first=false
         json+=$(json_string "$item")
-    done < <(sed -n "/^${var}=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep '"' | sed 's/.*"\([^"]*\)".*/\1/')
+    done < <(sed -n "/^${var}=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep -v '^\s*#' | grep '"' | sed 's/.*"\([^"]*\)".*/\1/')
     json+="]"
     echo "$json"
 }
@@ -524,7 +524,8 @@ cmd_get_settings() {
         "DOCKER_EXEC_COMMANDS_ALLOWED": $(_cfg_array_inline DOCKER_EXEC_COMMANDS_ALLOWED),
         "DOCKER_LOGS_PATTERNS": $(_cfg_array_inline DOCKER_LOGS_PATTERNS),
         "DOCKER_CONTAINER_PATTERNS": $(_cfg_array_inline DOCKER_CONTAINER_PATTERNS),
-        "BLOCKED_COMMANDS": $(_cfg_array_inline BLOCKED_COMMANDS)
+        "BLOCKED_COMMANDS": $(_cfg_array_inline BLOCKED_COMMANDS),
+        "PROTECTED_USERS": $(_cfg_array_inline PROTECTED_USERS)
     },
     "diretorios": {
         "LOG_DIRS_ALLOWED": $(_cfg_array_inline LOG_DIRS_ALLOWED),

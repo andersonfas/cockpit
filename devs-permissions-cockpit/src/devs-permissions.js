@@ -164,24 +164,11 @@
             env.textContent = (ov.environment || "").toUpperCase();
             env.className = "env-badge env-" + (ov.environment || "unknown");
 
-            // Groups panel - user names as tags for better display
+            // Groups panel
             var gh = '<div class="ilist">';
-            ["basic", "exec", "webconf"].forEach(function (level) {
-                var label = level === "basic" ? "devs (Basico)" : (level === "exec" ? "devs_exec (Exec)" : "devs_webconf (WebConf)");
-                var members = ov.groups[level] || "";
-                gh += '<div class="irow"><span class="ilabel">' + esc(label) + ':</span>';
-                if (members) {
-                    gh += '<div class="tags" style="flex:1">';
-                    members.split(",").forEach(function (u) {
-                        u = u.trim();
-                        if (u) gh += '<span class="tag">' + esc(u) + '</span>';
-                    });
-                    gh += '</div>';
-                } else {
-                    gh += '<span class="muted">Nenhum</span>';
-                }
-                gh += '</div>';
-            });
+            gh += '<div class="irow"><span class="ilabel">devs (Basico):</span><span class="ivalue">' + esc(ov.groups.basic || "Nenhum") + '</span></div>';
+            gh += '<div class="irow"><span class="ilabel">devs_exec (Exec):</span><span class="ivalue">' + esc(ov.groups.exec || "Nenhum") + '</span></div>';
+            gh += '<div class="irow"><span class="ilabel">devs_webconf (WebConf):</span><span class="ivalue">' + esc(ov.groups.webconf || "Nenhum") + '</span></div>';
             gh += '</div>';
             $("dash-groups").innerHTML = gh;
 
@@ -695,8 +682,14 @@
             html += '<div class="settings-section"><h4>Docker e Seguranca</h4>';
             html += '<div class="fg"><label>Comandos permitidos no exec (um por linha):</label>';
             html += '<textarea id="s-DOCKER_EXEC_COMMANDS_ALLOWED" class="finput" rows="3" style="resize:vertical">' + esc((s.docker.DOCKER_EXEC_COMMANDS_ALLOWED || []).join("\n")) + '</textarea></div>';
+            html += '<div class="fg"><label>Patterns de logs permitidos (um por linha):</label>';
+            html += '<textarea id="s-DOCKER_LOGS_PATTERNS" class="finput" rows="3" style="resize:vertical">' + esc((s.docker.DOCKER_LOGS_PATTERNS || []).join("\n")) + '</textarea></div>';
+            html += '<div class="fg"><label>Patterns de containers permitidos (um por linha):</label>';
+            html += '<textarea id="s-DOCKER_CONTAINER_PATTERNS" class="finput" rows="3" style="resize:vertical">' + esc((s.docker.DOCKER_CONTAINER_PATTERNS || []).join("\n")) + '</textarea></div>';
             html += '<div class="fg"><label>Comandos bloqueados (um por linha):</label>';
             html += '<textarea id="s-BLOCKED_COMMANDS" class="finput" rows="3" style="resize:vertical">' + esc((s.docker.BLOCKED_COMMANDS || []).join("\n")) + '</textarea></div>';
+            html += '<div class="fg"><label>Usuarios protegidos (um por linha):</label>';
+            html += '<textarea id="s-PROTECTED_USERS" class="finput" rows="2" style="resize:vertical">' + esc((s.docker.PROTECTED_USERS || []).join("\n")) + '</textarea></div>';
             html += '</div>';
 
             // === DIRETORIOS ===
