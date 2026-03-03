@@ -247,9 +247,11 @@
             users.forEach(function (u) {
                 var r = u.has_temp ? timeRemaining(u.temp_expires) : { text: "-", active: false };
                 var locked = u.locked === true;
-                html += "<tr" + (locked ? ' style="opacity:0.6"' : "") + ">";
+                var orphan = !u.basic && !u.exec && !u.webconf && !locked;
+                html += "<tr" + (locked || orphan ? ' style="opacity:0.6"' : "") + ">";
                 html += '<td class="uname">' + esc(u.name);
                 if (locked) html += ' <span class="badge bg-red">Desativado</span>';
+                if (orphan) html += ' <span class="badge bg-yellow">Orfao</span>';
                 html += "</td>";
                 html += "<td>" + (u.basic ? '<span class="ck-yes">&#10003;</span>' : '<span class="ck-no">-</span>') + "</td>";
                 html += "<td>" + (u.exec ? '<span class="ck-yes">&#10003;</span>' : '<span class="ck-no">-</span>') + "</td>";
@@ -262,20 +264,25 @@
                 }
                 html += "<td>" + esc(u.last_login || "-") + "</td>";
                 html += '<td class="actions">';
-                if (locked) {
+                if (orphan) {
+                    html += '<button class="btn btn-xs btn-success" data-act="readd-user" data-user="' + esc(u.name) + '">Re-adicionar</button> ';
+                    html += '<button class="btn btn-xs btn-danger" data-act="delete-user" data-user="' + esc(u.name) + '">Deletar</button>';
+                } else if (locked) {
                     html += '<button class="btn btn-xs btn-success" data-act="enable-user" data-user="' + esc(u.name) + '">Ativar</button> ';
+                    html += '<button class="btn btn-xs btn-danger" data-act="delete-user" data-user="' + esc(u.name) + '">Deletar</button>';
                 } else {
                     if (!u.exec) {
                         html += '<button class="btn btn-xs btn-success" data-act="promote" data-user="' + esc(u.name) + '">Promover</button> ';
-                    } else {
-                        html += '<button class="btn btn-xs btn-warning" data-act="demote" data-user="' + esc(u.name) + '">Rebaixar</button> ';
                     }
                     if (!u.webconf) {
                         html += '<button class="btn btn-xs btn-outline" data-act="add-webconf" data-user="' + esc(u.name) + '">+WebConf</button> ';
                     }
+                    if (u.exec || u.webconf) {
+                        html += '<button class="btn btn-xs btn-warning" data-act="demote" data-user="' + esc(u.name) + '">Rebaixar</button> ';
+                    }
                     html += '<button class="btn btn-xs btn-secondary" data-act="disable-user" data-user="' + esc(u.name) + '">Desativar</button> ';
+                    html += '<button class="btn btn-xs btn-danger" data-act="remove-user" data-user="' + esc(u.name) + '">Remover</button>';
                 }
-                html += '<button class="btn btn-xs btn-danger" data-act="remove-user" data-user="' + esc(u.name) + '">Remover</button>';
                 html += '</td></tr>';
             });
             $("users-tbody").innerHTML = html;
@@ -297,6 +304,8 @@
                     case "remove-user": doRemoveUser(user); break;
                     case "disable-user": doDisableUser(user); break;
                     case "enable-user": doEnableUser(user); break;
+                    case "delete-user": doDeleteUser(user); break;
+                    case "readd-user": doReaddUser(user); break;
                 }
             };
         });
@@ -324,7 +333,20 @@
             showLoading();
             manager(args).then(function (res) {
                 hideLoading();
-                showAlert(res.output || "Usuario adicionado.", res.status === "ok" ? "success" : "danger");
+                var output = res.output || "";
+                // Exibir credenciais em modal se o usuario foi criado com senha
+                var pwMatch = output.match(/Senha tempor[aá]ria:\s*(\S+)/);
+                if (pwMatch && res.status === "ok") {
+                    var pw = pwMatch[1];
+                    openModal("Usuario Criado", '<div style="text-align:center"><p>Usuario <strong>' + esc(user) + '</strong> criado com sucesso!</p>' +
+                        '<div style="background:#f4f4f4;padding:12px;border-radius:6px;margin:10px 0;font-family:monospace">' +
+                        '<p style="margin:4px 0">Usuario: <strong>' + esc(user) + '</strong></p>' +
+                        '<p style="margin:4px 0">Senha: <strong>' + esc(pw) + '</strong></p></div>' +
+                        '<p class="muted">Troca de senha obrigatoria no primeiro login.<br>Anote a senha, ela nao sera exibida novamente.</p></div>',
+                        "Entendido", function () {});
+                } else {
+                    showAlert(output || "Usuario adicionado.", res.status === "ok" ? "success" : "danger");
+                }
                 loadUsers(); loadDashboard();
             });
         });
@@ -391,6 +413,28 @@
             manager("enable-user", "--user", user).then(function (res) {
                 hideLoading();
                 showAlert(res.output || user + " ativado.", res.status === "ok" ? "success" : "danger");
+                loadUsers(); loadDashboard();
+            });
+        });
+    }
+
+    function doDeleteUser(user) {
+        openDangerModal("Deletar Usuario do Sistema", "<p>Deletar <strong>" + esc(user) + "</strong> permanentemente do sistema?</p><p class='muted'>O usuario sera removido do sistema (userdel). O home pode ser preservado como backup. Esta acao e IRREVERSIVEL.</p>", "Deletar", function () {
+            showLoading();
+            manager("delete-user", "--user", user).then(function (res) {
+                hideLoading();
+                showAlert(res.output || user + " deletado.", res.status === "ok" ? "success" : "danger");
+                loadUsers(); loadDashboard();
+            });
+        });
+    }
+
+    function doReaddUser(user) {
+        openModal("Re-adicionar ao Grupo", "<p>Re-adicionar <strong>" + esc(user) + "</strong> ao grupo basico de desenvolvedores?</p>", "Re-adicionar", function () {
+            showLoading();
+            manager("add-user", "--user", user).then(function (res) {
+                hideLoading();
+                showAlert(res.output || user + " re-adicionado.", res.status === "ok" ? "success" : "danger");
                 loadUsers(); loadDashboard();
             });
         });
@@ -851,7 +895,7 @@
             "Restaurar",
             function () {
                 showLoading();
-                manager("restore-backup", "--user", name).then(function (res) {
+                manager("restore-backup", "--backup", name).then(function (res) {
                     hideLoading();
                     $("maint-output").textContent = res.output || res.message || "Concluido.";
                     if (res.status === "ok") {

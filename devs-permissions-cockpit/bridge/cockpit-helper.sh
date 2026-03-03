@@ -161,7 +161,7 @@ cmd_list_users() {
     exec_members=$(get_group_members "$GRUPO_DEV_EXEC")
     webconf_members=$(get_group_members "$GRUPO_DEV_WEBCONF")
 
-    # Coletar todos os usuários únicos
+    # Coletar todos os usuários únicos (dos grupos)
     local all_users=""
     [[ -n "$basic_members" ]] && all_users="$basic_members"
     if [[ -n "$exec_members" ]]; then
@@ -169,6 +169,14 @@ cmd_list_users() {
     fi
     if [[ -n "$webconf_members" ]]; then
         [[ -n "$all_users" ]] && all_users="${all_users},${webconf_members}" || all_users="$webconf_members"
+    fi
+
+    # Também incluir usuários criados pelo manager mas que não estão em nenhum grupo
+    # (órfãos que foram removidos dos grupos via remove-user mas ainda existem no sistema)
+    local managed_users
+    managed_users=$(getent passwd 2>/dev/null | grep "managed by devs_permissions" | cut -d: -f1 | tr '\n' ',')
+    if [[ -n "$managed_users" ]]; then
+        [[ -n "$all_users" ]] && all_users="${all_users},${managed_users}" || all_users="$managed_users"
     fi
 
     # Deduplica
@@ -640,7 +648,7 @@ cmd_run_manager() {
 
     # Whitelist de subcomandos permitidos via Cockpit
     local -r ALLOWED_COMMANDS=(
-        "add-user" "remove-user" "disable-user" "enable-user"
+        "add-user" "remove-user" "delete-user" "disable-user" "enable-user"
         "promote" "demote" "reset-user"
         "grant-temp" "revoke-temp"
         "approve" "deny"
@@ -697,7 +705,7 @@ cmd_run_manager() {
                 --user|-u)       sanitized_args+=("$arg"); expect_user=true ;;
                 --reason)        sanitized_args+=("$arg"); expect_reason=true ;;
                 --hours|-H)      sanitized_args+=("$arg"); expect_hours=true ;;
-                --request-id|--days|--format) sanitized_args+=("$arg"); expect_value=true ;;
+                --request-id|--days|--format|--backup) sanitized_args+=("$arg"); expect_value=true ;;
                 --exec|--webconf|--dry-run|--verbose) sanitized_args+=("$arg") ;;
                 -*)
                     # Flag desconhecida: rejeitar

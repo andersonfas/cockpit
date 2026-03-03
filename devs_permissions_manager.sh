@@ -175,6 +175,7 @@ CMD_APPROVER=""
 CMD_REQUEST_ID=""
 CMD_ENVIRONMENT=""
 CMD_REMOVE_HOME=false
+CMD_BACKUP_NAME=""
 
 #===============================================================================
 # CORES (detecta se terminal suporta)
@@ -1012,26 +1013,28 @@ create_user() {
     chage -d 0 "$user" 2>/dev/null || true
     
     # Salva credenciais
+    mkdir -p "${BACKUP_DIR}/credentials" 2>/dev/null
+    chmod 700 "${BACKUP_DIR}/credentials" 2>/dev/null || true
     local cred_file="${BACKUP_DIR}/credentials/new_user_${user}_$(date +%Y%m%d%H%M%S).cred"
     cat > "$cred_file" << EOF
 ═══════════════════════════════════════════════════════════
- CREDENCIAIS DE ACESSO - DETRAN-CE
+ CREDENCIAIS DE ACESSO
 ═══════════════════════════════════════════════════════════
  Usuário: $user
  Senha temporária: $password
- 
- ⚠️  IMPORTANTE: Troca de senha obrigatória no primeiro login
- 
+
+ IMPORTANTE: Troca de senha obrigatória no primeiro login
+
  Data criação: $(_ts)
  Criado por: ${SUDO_USER:-root}
  Ambiente: $ENVIRONMENT
 ═══════════════════════════════════════════════════════════
 EOF
     chmod 600 "$cred_file"
-    
+
     audit_log "USER_CREATED" "root" "user=$user"
-    log_ok "Usuário criado: $user"
-    log_info "Credenciais: $cred_file"
+    log_ok "Usuário criado: $user | Senha temporária: $password | Troca obrigatória no primeiro login"
+    log_info "Credenciais salvas em: $cred_file"
     
     return 0
 }
@@ -3532,23 +3535,34 @@ cmd_add_user() {
         log_error "Use --user NOME"
         return 1
     fi
-    
+
     log_info "Adicionando usuário: $CMD_USER"
-    
-    # Garante grupos
-    ensure_group_exists "$GRUPO_DEV"
+
+    # Garante grupos existem
+    if ! ensure_group_exists "$GRUPO_DEV"; then
+        log_error "Falha ao criar grupo base: $GRUPO_DEV"
+        return 1
+    fi
     [[ "$CMD_EXEC" == true ]] && ensure_group_exists "$GRUPO_DEV_EXEC"
     [[ "$CMD_WEBCONF" == true ]] && ensure_group_exists "$GRUPO_DEV_WEBCONF"
-    
-    # Cria usuário
-    create_user "$CMD_USER" "$GRUPO_DEV"
-    add_user_to_group "$CMD_USER" "$GRUPO_DEV"
-    
+
+    # Cria usuário no sistema (se não existir)
+    if ! create_user "$CMD_USER" "$GRUPO_DEV"; then
+        log_error "Falha ao criar usuário: $CMD_USER"
+        return 1
+    fi
+
+    # Adiciona ao grupo básico
+    if ! add_user_to_group "$CMD_USER" "$GRUPO_DEV"; then
+        log_error "Falha ao adicionar $CMD_USER ao grupo $GRUPO_DEV"
+        return 1
+    fi
+
     [[ "$CMD_EXEC" == true ]] && add_user_to_group "$CMD_USER" "$GRUPO_DEV_EXEC"
     [[ "$CMD_WEBCONF" == true ]] && add_user_to_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
-    
+
     configure_user_bashrc "$CMD_USER"
-    
+
     audit_log "USER_ADDED" "root" "user=$CMD_USER,exec=$CMD_EXEC,webconf=$CMD_WEBCONF"
     log_ok "Usuário adicionado: $CMD_USER"
 }
@@ -3819,11 +3833,12 @@ cmd_demote() {
         log_error "Use --user NOME"
         return 1
     fi
-    
+
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
-    
+    remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
+
     audit_log "USER_DEMOTED" "root" "user=$CMD_USER"
-    log_ok "Usuário removido do exec: $CMD_USER"
+    log_ok "Usuário rebaixado (exec e webconf removidos): $CMD_USER"
 }
 
 # Comando: grant-temp
@@ -4184,6 +4199,10 @@ parse_args() {
                 CMD_REMOVE_HOME=true
                 shift
                 ;;
+            --backup)
+                CMD_BACKUP_NAME="$2"
+                shift 2
+                ;;
             -*)
                 log_error "Opção desconhecida: $1"
                 echo "Use -h para ajuda"
@@ -4266,7 +4285,7 @@ main() {
             ;;
         backup)          create_backup ;;
         list-backups)    list_backups ;;
-        restore-backup)  restore_backup "$CMD_USER" ;;
+        restore-backup)  restore_backup "${CMD_BACKUP_NAME:-$CMD_USER}" ;;
         send-report)     send_report ;;
         generate-html)   generate_dashboard_html "$DASHBOARD_DIR/index.html" ;;
         sync)            sync_group_members ;;
