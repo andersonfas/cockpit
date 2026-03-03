@@ -3,7 +3,7 @@
  * Interface grafica completa para o devs_permissions_manager.sh
  *
  * Comunicacao: cockpit-helper.sh (bridge JSON)
- * Versao: 1.1.0
+ * Versao: 2.0.0
  */
 
 (function () {
@@ -210,11 +210,13 @@
                 var sh = '<div class="ilist">';
                 sh += '<div class="irow"><span class="ilabel">Manager:</span><span class="badge ' + (inst.manager_installed ? "bg-green" : "bg-red") + '">' + (inst.manager_installed ? "Instalado" : "Nao encontrado") + '</span></div>';
                 sh += '<div class="irow"><span class="ilabel">Config:</span><span class="badge ' + (inst.config_exists ? "bg-green" : "bg-red") + '">' + (inst.config_exists ? "OK" : "Nao encontrado") + '</span></div>';
-                if (inst.manager_version) sh += '<div class="irow"><span class="ilabel">Versao:</span><span>' + esc(inst.manager_version) + '</span></div>';
-                sh += '<div class="irow"><span class="ilabel">Helper:</span><span>v' + esc(inst.helper_version) + '</span></div>';
+                if (inst.manager_version) sh += '<div class="irow"><span class="ilabel">Manager:</span><span>v' + esc(inst.manager_version) + '</span></div>';
+                sh += '<div class="irow"><span class="ilabel">Plugin:</span><span>v' + esc(inst.helper_version) + '</span></div>';
                 sh += '</div>';
                 $("dash-status").innerHTML = sh;
-                $("header-version").textContent = inst.manager_version || "";
+                var ver = "Plugin v" + (inst.helper_version || "?");
+                if (inst.manager_version) ver += " | Manager " + inst.manager_version;
+                $("header-version").textContent = ver;
             });
 
         }).catch(function (err) {

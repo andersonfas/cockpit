@@ -18,7 +18,7 @@ set -euo pipefail
 
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly NAME="devs-permissions-cockpit"
-readonly VERSION="1.0.0"
+readonly VERSION="2.0.0"
 
 # Paths FHS
 readonly COCKPIT_DIR="/usr/share/cockpit/devs-permissions"

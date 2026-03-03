@@ -15,7 +15,7 @@
 set -o nounset
 set -o pipefail
 
-readonly HELPER_VERSION="1.0.0"
+readonly HELPER_VERSION="2.0.0"
 readonly MANAGER_SCRIPT="/usr/libexec/devs-permissions/devs_permissions_manager.sh"
 readonly CONFIG_FILE="/etc/devs-permissions/devs_permissions.conf"
 
