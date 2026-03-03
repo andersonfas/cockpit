@@ -391,6 +391,131 @@ cmd_list_teams() {
 }
 
 #===============================================================================
+# COMANDOS - GERENCIAR TIMES (edita config diretamente)
+#===============================================================================
+
+cmd_team_add() {
+    # Adiciona um novo time ao config
+    local team_name="$1"
+    team_name=$(echo "$team_name" | sed 's/[^a-zA-Z0-9_]//g')
+    if [[ -z "$team_name" ]]; then
+        echo '{"status":"error","message":"Nome do time invalido"}'
+        return 1
+    fi
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo '{"status":"error","message":"Config file not found"}'
+        return 1
+    fi
+
+    # Verificar se o time já existe
+    if sed -n '/^TEAMS=(/,/)/p' "$CONFIG_FILE" | grep -q "\"$team_name\""; then
+        echo '{"status":"error","message":"Time ja existe: '"$team_name"'"}'
+        return 1
+    fi
+
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+
+    # Adicionar nome ao array TEAMS
+    if grep -q '^TEAMS=(' "$CONFIG_FILE"; then
+        # Inserir antes do fechamento do array
+        sed -i "/^TEAMS=(/,/)/{
+            /)/i\\    \"$team_name\"
+        }" "$CONFIG_FILE"
+    else
+        # Criar array TEAMS
+        printf '\nTEAMS=(\n    "%s"\n)\n' "$team_name" >> "$CONFIG_FILE"
+    fi
+
+    # Criar arrays vazios para o time
+    printf '\nTEAM_%s_USERS=(\n)\n' "$team_name" >> "$CONFIG_FILE"
+    printf '\nTEAM_%s_CONTAINERS=(\n)\n' "$team_name" >> "$CONFIG_FILE"
+
+    echo '{"status":"ok","message":"Time criado: '"$team_name"'"}'
+}
+
+cmd_team_remove() {
+    local team_name="$1"
+    team_name=$(echo "$team_name" | sed 's/[^a-zA-Z0-9_]//g')
+    if [[ -z "$team_name" ]]; then
+        echo '{"status":"error","message":"Nome do time invalido"}'
+        return 1
+    fi
+
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+
+    # Remover do array TEAMS
+    sed -i "/^TEAMS=(/,/)/{/\"$team_name\"/d}" "$CONFIG_FILE"
+
+    # Remover arrays do time
+    sed -i "/^TEAM_${team_name}_USERS=(/,/)/d" "$CONFIG_FILE"
+    sed -i "/^TEAM_${team_name}_CONTAINERS=(/,/)/d" "$CONFIG_FILE"
+    sed -i "/^TEAM_${team_name}_WEBCONF_PATTERNS=(/,/)/d" "$CONFIG_FILE"
+
+    echo '{"status":"ok","message":"Time removido: '"$team_name"'"}'
+}
+
+cmd_team_add_member() {
+    # Adiciona usuario ou container a um time
+    local team_name="$1" item_type="$2" item_value="$3"
+    team_name=$(echo "$team_name" | sed 's/[^a-zA-Z0-9_]//g')
+    item_value=$(echo "$item_value" | sed 's/[^a-zA-Z0-9._*/-]//g')
+
+    if [[ -z "$team_name" || -z "$item_type" || -z "$item_value" ]]; then
+        echo '{"status":"error","message":"Parametros incompletos"}'
+        return 1
+    fi
+
+    local array_name
+    case "$item_type" in
+        user)      array_name="TEAM_${team_name}_USERS" ;;
+        container) array_name="TEAM_${team_name}_CONTAINERS" ;;
+        *)
+            echo '{"status":"error","message":"Tipo invalido: '"$item_type"'"}'
+            return 1
+            ;;
+    esac
+
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+
+    # Verificar se já existe
+    if sed -n "/^${array_name}=(/,/)/p" "$CONFIG_FILE" | grep -q "\"$item_value\""; then
+        echo '{"status":"error","message":"'"$item_value"' ja existe no time '"$team_name"'"}'
+        return 1
+    fi
+
+    # Inserir no array
+    if grep -q "^${array_name}=(" "$CONFIG_FILE"; then
+        sed -i "/^${array_name}=(/,/)/{
+            /)/i\\    \"$item_value\"
+        }" "$CONFIG_FILE"
+    else
+        printf '\n%s=(\n    "%s"\n)\n' "$array_name" "$item_value" >> "$CONFIG_FILE"
+    fi
+
+    echo '{"status":"ok","message":"'"$item_value"' adicionado ao time '"$team_name"'"}'
+}
+
+cmd_team_remove_member() {
+    local team_name="$1" item_type="$2" item_value="$3"
+    team_name=$(echo "$team_name" | sed 's/[^a-zA-Z0-9_]//g')
+    item_value=$(echo "$item_value" | sed 's/[^a-zA-Z0-9._*/-]//g')
+
+    local array_name
+    case "$item_type" in
+        user)      array_name="TEAM_${team_name}_USERS" ;;
+        container) array_name="TEAM_${team_name}_CONTAINERS" ;;
+        *) echo '{"status":"error","message":"Tipo invalido"}'; return 1 ;;
+    esac
+
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+
+    sed -i "/^${array_name}=(/,/)/{/\"$item_value\"/d}" "$CONFIG_FILE"
+
+    echo '{"status":"ok","message":"'"$item_value"' removido do time '"$team_name"'"}'
+}
+
+#===============================================================================
 # COMANDOS - BACKUPS
 #===============================================================================
 
@@ -777,6 +902,10 @@ main() {
         save-config)       cmd_save_config "$*" ;;
         get-settings)      cmd_get_settings ;;
         save-settings)     cmd_save_settings "$*" ;;
+        team-add)          cmd_team_add "$@" ;;
+        team-remove)       cmd_team_remove "$@" ;;
+        team-add-member)   cmd_team_add_member "$@" ;;
+        team-remove-member) cmd_team_remove_member "$@" ;;
         check-install)     cmd_check_install ;;
 
         # Proxy para o manager (todas as ações de escrita)

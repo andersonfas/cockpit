@@ -88,6 +88,8 @@ body{font-family:"RedHatText","Open Sans",-apple-system,BlinkMacSystemFont,"Sego
 .bg-green{background:#e7f5e5;color:#1e4f18}
 .bg-red{background:#faeae8;color:#a30000}
 .bg-yellow{background:#fdf7e7;color:#795600}
+.btn-inline-x{background:none;border:none;color:#c9190b;cursor:pointer;font-size:14px;font-weight:700;padding:0 2px;margin-left:4px;line-height:1;vertical-align:middle}
+.btn-inline-x:hover{color:#a30000}
 
 /* === INFO LIST === */
 .ilist{display:flex;flex-direction:column;gap:6px}

@@ -449,31 +449,46 @@
             var el = $("teams-container");
             var teams = (data && data.teams) || [];
             if (!teams.length) {
-                el.innerHTML = '<p class="muted">Nenhum time configurado. Edite a configuracao para adicionar.</p>';
+                el.innerHTML = '<p class="muted">Nenhum time configurado. Clique em "+ Criar Time" para adicionar.</p>';
                 return;
             }
             var html = '<div class="teams-grid">';
             teams.forEach(function (t) {
                 html += '<div class="team-card">';
+                html += '<div style="display:flex;justify-content:space-between;align-items:center">';
                 html += '<h4>' + esc(t.name) + '</h4>';
+                html += '<button class="btn btn-xs btn-danger" data-team-del="' + esc(t.name) + '" title="Remover time">&#10005;</button>';
+                html += '</div>';
+
+                // Usuarios
                 html += '<div class="tsec"><span class="tlabel">Usuarios:</span>';
                 if (t.users.length) {
                     html += '<ul class="tlist">';
-                    t.users.forEach(function (u) { html += '<li>' + esc(u) + '</li>'; });
+                    t.users.forEach(function (u) {
+                        html += '<li>' + esc(u) + ' <button class="btn-inline-x" data-team-rm="' + esc(t.name) + '" data-rm-type="user" data-rm-val="' + esc(u) + '" title="Remover">&times;</button></li>';
+                    });
                     html += '</ul>';
                 } else {
                     html += '<p class="muted">Nenhum</p>';
                 }
+                html += '<button class="btn btn-xs btn-outline" data-team-add="' + esc(t.name) + '" data-add-type="user">+ Usuario</button>';
                 html += '</div>';
+
+                // Containers
                 html += '<div class="tsec"><span class="tlabel">Containers:</span>';
                 if (t.containers.length) {
                     html += '<div class="tags">';
-                    t.containers.forEach(function (c) { html += '<span class="tag">' + esc(c) + '</span>'; });
+                    t.containers.forEach(function (c) {
+                        html += '<span class="tag">' + esc(c) + ' <button class="btn-inline-x" data-team-rm="' + esc(t.name) + '" data-rm-type="container" data-rm-val="' + esc(c) + '">&times;</button></span>';
+                    });
                     html += '</div>';
                 } else {
                     html += '<p class="muted">Nenhum</p>';
                 }
+                html += '<button class="btn btn-xs btn-outline" data-team-add="' + esc(t.name) + '" data-add-type="container">+ Container</button>';
                 html += '</div>';
+
+                // WebConf patterns (readonly)
                 html += '<div class="tsec"><span class="tlabel">WebConf Patterns:</span>';
                 if (t.webconf_patterns.length) {
                     html += '<div class="tags">';
@@ -486,8 +501,76 @@
             });
             html += '</div>';
             el.innerHTML = html;
+            bindTeamActions();
         }).catch(function (err) {
             showAlert("Erro ao carregar times: " + err, "danger");
+        });
+    }
+
+    $("btn-add-team").onclick = function () {
+        openModal("Criar Time", '<div class="fg"><label>Nome do time:</label><input type="text" id="m-team-name" class="finput" placeholder="nome_do_time (sem espacos)" /></div>', "Criar", function () {
+            var name = $("m-team-name").value.trim();
+            if (!name) { showAlert("Informe o nome do time.", "danger"); return; }
+            showLoading();
+            helper("team-add", name).then(function (res) {
+                hideLoading();
+                showAlert(res.message || "Time criado.", res.status === "ok" ? "success" : "danger");
+                if (res.status === "ok") loadTeams();
+            });
+        });
+    };
+
+    function bindTeamActions() {
+        // Remover time
+        document.querySelectorAll("[data-team-del]").forEach(function (btn) {
+            btn.onclick = function () {
+                var team = btn.getAttribute("data-team-del");
+                openDangerModal("Remover Time", "<p>Remover o time <strong>" + esc(team) + "</strong> e todas as suas configuracoes?</p>", "Remover", function () {
+                    showLoading();
+                    helper("team-remove", team).then(function (res) {
+                        hideLoading();
+                        showAlert(res.message || "Time removido.", res.status === "ok" ? "success" : "danger");
+                        if (res.status === "ok") loadTeams();
+                    });
+                });
+            };
+        });
+
+        // Adicionar membro/container
+        document.querySelectorAll("[data-team-add]").forEach(function (btn) {
+            btn.onclick = function () {
+                var team = btn.getAttribute("data-team-add");
+                var type = btn.getAttribute("data-add-type");
+                var label = type === "user" ? "Nome do usuario" : "Nome/pattern do container";
+                var placeholder = type === "user" ? "usuario.nome" : "container-name ou *pattern*";
+                openModal("Adicionar " + (type === "user" ? "Usuario" : "Container") + " ao time " + team,
+                    '<div class="fg"><label>' + label + ':</label><input type="text" id="m-team-item" class="finput" placeholder="' + placeholder + '" /></div>',
+                    "Adicionar", function () {
+                        var val = $("m-team-item").value.trim();
+                        if (!val) { showAlert("Informe o valor.", "danger"); return; }
+                        showLoading();
+                        helper("team-add-member", team, type, val).then(function (res) {
+                            hideLoading();
+                            showAlert(res.message || "Adicionado.", res.status === "ok" ? "success" : "danger");
+                            if (res.status === "ok") loadTeams();
+                        });
+                    });
+            };
+        });
+
+        // Remover membro/container
+        document.querySelectorAll("[data-team-rm]").forEach(function (btn) {
+            btn.onclick = function () {
+                var team = btn.getAttribute("data-team-rm");
+                var type = btn.getAttribute("data-rm-type");
+                var val = btn.getAttribute("data-rm-val");
+                showLoading();
+                helper("team-remove-member", team, type, val).then(function (res) {
+                    hideLoading();
+                    showAlert(res.message || "Removido.", res.status === "ok" ? "success" : "danger");
+                    if (res.status === "ok") loadTeams();
+                });
+            };
         });
     }
 
