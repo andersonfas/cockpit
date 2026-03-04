@@ -3814,17 +3814,30 @@ cmd_promote() {
         log_error "Use --user NOME"
         return 1
     fi
-    
+
     if ! user_exists "$CMD_USER"; then
         log_error "Usuário não existe: $CMD_USER"
         return 1
     fi
-    
-    ensure_group_exists "$GRUPO_DEV_EXEC"
-    add_user_to_group "$CMD_USER" "$GRUPO_DEV_EXEC"
-    
-    audit_log "USER_PROMOTED" "root" "user=$CMD_USER"
-    log_ok "Usuário promovido para exec: $CMD_USER"
+
+    # Se nenhuma flag especificada, promove para exec (compatibilidade)
+    if [[ "$CMD_EXEC" == false && "$CMD_WEBCONF" == false ]]; then
+        ensure_group_exists "$GRUPO_DEV_EXEC"
+        add_user_to_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+        audit_log "USER_PROMOTED" "root" "user=$CMD_USER,exec=true"
+        log_ok "Usuário promovido para exec: $CMD_USER"
+    else
+        if [[ "$CMD_EXEC" == true ]]; then
+            ensure_group_exists "$GRUPO_DEV_EXEC"
+            add_user_to_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+        fi
+        if [[ "$CMD_WEBCONF" == true ]]; then
+            ensure_group_exists "$GRUPO_DEV_WEBCONF"
+            add_user_to_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
+        fi
+        audit_log "USER_PROMOTED" "root" "user=$CMD_USER,exec=$CMD_EXEC,webconf=$CMD_WEBCONF"
+        log_ok "Usuário promovido: $CMD_USER (exec=$CMD_EXEC, webconf=$CMD_WEBCONF)"
+    fi
 }
 
 # Comando: demote
@@ -3834,11 +3847,22 @@ cmd_demote() {
         return 1
     fi
 
-    remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
-    remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
-
-    audit_log "USER_DEMOTED" "root" "user=$CMD_USER"
-    log_ok "Usuário rebaixado (exec e webconf removidos): $CMD_USER"
+    # Se nenhuma flag especificada, remove ambos (compatibilidade)
+    if [[ "$CMD_EXEC" == false && "$CMD_WEBCONF" == false ]]; then
+        remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+        remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
+        audit_log "USER_DEMOTED" "root" "user=$CMD_USER,exec=true,webconf=true"
+        log_ok "Usuário rebaixado (exec e webconf removidos): $CMD_USER"
+    else
+        if [[ "$CMD_EXEC" == true ]]; then
+            remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+        fi
+        if [[ "$CMD_WEBCONF" == true ]]; then
+            remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
+        fi
+        audit_log "USER_DEMOTED" "root" "user=$CMD_USER,exec=$CMD_EXEC,webconf=$CMD_WEBCONF"
+        log_ok "Usuário rebaixado: $CMD_USER (exec=$CMD_EXEC, webconf=$CMD_WEBCONF)"
+    fi
 }
 
 # Comando: grant-temp

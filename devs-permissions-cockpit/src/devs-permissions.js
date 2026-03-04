@@ -274,13 +274,14 @@
                     html += '<button class="btn btn-xs btn-danger" data-act="delete-user" data-user="' + esc(u.name) + '">Deletar</button>';
                 } else {
                     if (!u.exec) {
-                        html += '<button class="btn btn-xs btn-success" data-act="promote" data-user="' + esc(u.name) + '">Promover</button> ';
+                        html += '<button class="btn btn-xs btn-success" data-act="promote-exec" data-user="' + esc(u.name) + '">+Exec</button> ';
+                    } else {
+                        html += '<button class="btn btn-xs btn-warning" data-act="demote-exec" data-user="' + esc(u.name) + '">-Exec</button> ';
                     }
                     if (!u.webconf) {
-                        html += '<button class="btn btn-xs btn-outline" data-act="add-webconf" data-user="' + esc(u.name) + '">+WebConf</button> ';
-                    }
-                    if (u.exec || u.webconf) {
-                        html += '<button class="btn btn-xs btn-warning" data-act="demote" data-user="' + esc(u.name) + '">Rebaixar</button> ';
+                        html += '<button class="btn btn-xs btn-success" data-act="promote-webconf" data-user="' + esc(u.name) + '">+WebConf</button> ';
+                    } else {
+                        html += '<button class="btn btn-xs btn-warning" data-act="demote-webconf" data-user="' + esc(u.name) + '">-WebConf</button> ';
                     }
                     html += '<button class="btn btn-xs btn-secondary" data-act="disable-user" data-user="' + esc(u.name) + '">Desativar</button> ';
                     html += '<button class="btn btn-xs btn-danger" data-act="remove-user" data-user="' + esc(u.name) + '">Remover</button>';
@@ -300,9 +301,10 @@
                 var act = btn.getAttribute("data-act");
                 var user = btn.getAttribute("data-user");
                 switch (act) {
-                    case "promote": doPromote(user); break;
-                    case "demote": doDemote(user); break;
-                    case "add-webconf": doAddWebconf(user); break;
+                    case "promote-exec": doPromoteExec(user); break;
+                    case "demote-exec": doDemoteExec(user); break;
+                    case "promote-webconf": doPromoteWebconf(user); break;
+                    case "demote-webconf": doDemoteWebconf(user); break;
                     case "remove-user": doRemoveUser(user); break;
                     case "disable-user": doDisableUser(user); break;
                     case "enable-user": doEnableUser(user); break;
@@ -354,34 +356,45 @@
         });
     }
 
-    function doPromote(user) {
-        openModal("Promover para Exec", "<p>Promover <strong>" + esc(user) + "</strong> para nivel Exec?</p>", "Promover", function () {
+    function doPromoteExec(user) {
+        openModal("Adicionar Exec", "<p>Conceder acesso <strong>Exec</strong> a <strong>" + esc(user) + "</strong>?</p>", "Conceder", function () {
             showLoading();
-            manager("promote", "--user", user).then(function (res) {
+            manager("promote", "--user", user, "--exec").then(function (res) {
                 hideLoading();
-                showAlert(res.output || user + " promovido.", res.status === "ok" ? "success" : "danger");
+                showAlert(res.output || "Exec concedido a " + user + ".", res.status === "ok" ? "success" : "danger");
                 loadUsers(); loadDashboard();
             });
         });
     }
 
-    function doDemote(user) {
-        openModal("Rebaixar Usuario", "<p>Remover acesso Exec de <strong>" + esc(user) + "</strong>?</p>", "Rebaixar", function () {
+    function doDemoteExec(user) {
+        openModal("Remover Exec", "<p>Remover acesso <strong>Exec</strong> de <strong>" + esc(user) + "</strong>?</p>", "Remover", function () {
             showLoading();
-            manager("demote", "--user", user).then(function (res) {
+            manager("demote", "--user", user, "--exec").then(function (res) {
                 hideLoading();
-                showAlert(res.output || user + " rebaixado.", res.status === "ok" ? "success" : "danger");
+                showAlert(res.output || "Exec removido de " + user + ".", res.status === "ok" ? "success" : "danger");
                 loadUsers(); loadDashboard();
             });
         });
     }
 
-    function doAddWebconf(user) {
-        openModal("Adicionar WebConf", "<p>Conceder acesso WebConf a <strong>" + esc(user) + "</strong>?</p>", "Conceder", function () {
+    function doPromoteWebconf(user) {
+        openModal("Adicionar WebConf", "<p>Conceder acesso <strong>WebConf</strong> a <strong>" + esc(user) + "</strong>?</p>", "Conceder", function () {
             showLoading();
-            manager("add-user", "--user", user, "--webconf").then(function (res) {
+            manager("promote", "--user", user, "--webconf").then(function (res) {
                 hideLoading();
-                showAlert(res.output || "WebConf concedido.", res.status === "ok" ? "success" : "danger");
+                showAlert(res.output || "WebConf concedido a " + user + ".", res.status === "ok" ? "success" : "danger");
+                loadUsers(); loadDashboard();
+            });
+        });
+    }
+
+    function doDemoteWebconf(user) {
+        openModal("Remover WebConf", "<p>Remover acesso <strong>WebConf</strong> de <strong>" + esc(user) + "</strong>?</p>", "Remover", function () {
+            showLoading();
+            manager("demote", "--user", user, "--webconf").then(function (res) {
+                hideLoading();
+                showAlert(res.output || "WebConf removido de " + user + ".", res.status === "ok" ? "success" : "danger");
                 loadUsers(); loadDashboard();
             });
         });
