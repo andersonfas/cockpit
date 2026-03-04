@@ -3820,6 +3820,10 @@ cmd_promote() {
         return 1
     fi
 
+    # Garante que o usuario esteja no grupo basico
+    ensure_group_exists "$GRUPO_DEV"
+    add_user_to_group "$CMD_USER" "$GRUPO_DEV"
+
     # Se nenhuma flag especificada, promove para exec (compatibilidade)
     if [[ "$CMD_EXEC" == false && "$CMD_WEBCONF" == false ]]; then
         ensure_group_exists "$GRUPO_DEV_EXEC"
