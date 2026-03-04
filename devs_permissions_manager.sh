@@ -3529,6 +3529,41 @@ cmd_remove() {
     log_info "Nota: Grupos e usuários NÃO foram removidos"
 }
 
+# ══════════════════════════════════════════════════════════════════════════════
+# HELPERS: Sincronizar arrays do config com alterações da interface
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Adiciona usuario a um array no config (ex: USUARIOS, USUARIOS_EXEC, USUARIOS_WEBCONF)
+config_array_add() {
+    local array_name="$1" username="$2"
+    [[ ! -f "$CONFIG_FILE" ]] && return 1
+
+    # Verificar se já existe no array
+    if sed -n "/^${array_name}=(/,/)/p" "$CONFIG_FILE" | grep -q "\"$username\""; then
+        return 0  # já existe
+    fi
+
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+
+    # Inserir no array existente ou criar o array
+    if grep -q "^${array_name}=(" "$CONFIG_FILE"; then
+        sed -i "/^${array_name}=(/,/)/{
+            /)/i\\    \"$username\"
+        }" "$CONFIG_FILE"
+    else
+        printf '\n%s=(\n    "%s"\n)\n' "$array_name" "$username" >> "$CONFIG_FILE"
+    fi
+}
+
+# Remove usuario de um array no config
+config_array_remove() {
+    local array_name="$1" username="$2"
+    [[ ! -f "$CONFIG_FILE" ]] && return 0
+
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+    sed -i "/^${array_name}=(/,/)/{/\"$username\"/d}" "$CONFIG_FILE"
+}
+
 # Comando: add-user
 cmd_add_user() {
     if [[ -z "$CMD_USER" ]]; then
@@ -3561,6 +3596,11 @@ cmd_add_user() {
     [[ "$CMD_EXEC" == true ]] && add_user_to_group "$CMD_USER" "$GRUPO_DEV_EXEC"
     [[ "$CMD_WEBCONF" == true ]] && add_user_to_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
 
+    # Sincroniza config
+    config_array_add "USUARIOS" "$CMD_USER"
+    [[ "$CMD_EXEC" == true ]] && config_array_add "USUARIOS_EXEC" "$CMD_USER"
+    [[ "$CMD_WEBCONF" == true ]] && config_array_add "USUARIOS_WEBCONF" "$CMD_USER"
+
     configure_user_bashrc "$CMD_USER"
 
     audit_log "USER_ADDED" "root" "user=$CMD_USER,exec=$CMD_EXEC,webconf=$CMD_WEBCONF"
@@ -3579,11 +3619,16 @@ cmd_remove_user() {
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV"
-    
+
+    # Sincroniza config
+    config_array_remove "USUARIOS" "$CMD_USER"
+    config_array_remove "USUARIOS_EXEC" "$CMD_USER"
+    config_array_remove "USUARIOS_WEBCONF" "$CMD_USER"
+
     # Remove acesso temporário se houver
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.expiry" 2>/dev/null
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.reason" 2>/dev/null
-    
+
     audit_log "USER_REMOVED" "root" "user=$CMD_USER"
     log_ok "Permissões removidas: $CMD_USER"
 }
@@ -3611,6 +3656,11 @@ cmd_disable_user() {
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV"
+
+    # Sincroniza config
+    config_array_remove "USUARIOS" "$CMD_USER"
+    config_array_remove "USUARIOS_EXEC" "$CMD_USER"
+    config_array_remove "USUARIOS_WEBCONF" "$CMD_USER"
 
     # Remove acesso temporário
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.expiry" 2>/dev/null
@@ -3654,6 +3704,9 @@ cmd_enable_user() {
     # Adiciona ao grupo básico
     add_user_to_group "$CMD_USER" "$GRUPO_DEV"
 
+    # Sincroniza config
+    config_array_add "USUARIOS" "$CMD_USER"
+
     audit_log "USER_ENABLED" "root" "user=$CMD_USER"
     log_ok "Usuário reativado: $CMD_USER"
 }
@@ -3681,11 +3734,16 @@ cmd_reset_user() {
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV"
-    
+
+    # Sincroniza config
+    config_array_remove "USUARIOS" "$CMD_USER"
+    config_array_remove "USUARIOS_EXEC" "$CMD_USER"
+    config_array_remove "USUARIOS_WEBCONF" "$CMD_USER"
+
     # Remove acesso temporário
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.expiry" 2>/dev/null
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.reason" 2>/dev/null
-    
+
     # Limpa .bashrc
     local user_home
     user_home=$(getent passwd "$CMD_USER" | cut -d: -f6)
@@ -3756,12 +3814,17 @@ cmd_delete_user() {
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV"
-    
+
+    # Sincroniza config
+    config_array_remove "USUARIOS" "$CMD_USER"
+    config_array_remove "USUARIOS_EXEC" "$CMD_USER"
+    config_array_remove "USUARIOS_WEBCONF" "$CMD_USER"
+
     # Remove arquivos de acesso temporário
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.expiry" 2>/dev/null
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.reason" 2>/dev/null
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.lastactivity" 2>/dev/null
-    
+
     # Encerra processos
     pkill -u "$CMD_USER" 2>/dev/null || true
     sleep 1
@@ -3824,20 +3887,26 @@ cmd_promote() {
     ensure_group_exists "$GRUPO_DEV"
     add_user_to_group "$CMD_USER" "$GRUPO_DEV"
 
+    # Sincroniza config - garante usuario no array basico
+    config_array_add "USUARIOS" "$CMD_USER"
+
     # Se nenhuma flag especificada, promove para exec (compatibilidade)
     if [[ "$CMD_EXEC" == false && "$CMD_WEBCONF" == false ]]; then
         ensure_group_exists "$GRUPO_DEV_EXEC"
         add_user_to_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+        config_array_add "USUARIOS_EXEC" "$CMD_USER"
         audit_log "USER_PROMOTED" "root" "user=$CMD_USER,exec=true"
         log_ok "Usuário promovido para exec: $CMD_USER"
     else
         if [[ "$CMD_EXEC" == true ]]; then
             ensure_group_exists "$GRUPO_DEV_EXEC"
             add_user_to_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+            config_array_add "USUARIOS_EXEC" "$CMD_USER"
         fi
         if [[ "$CMD_WEBCONF" == true ]]; then
             ensure_group_exists "$GRUPO_DEV_WEBCONF"
             add_user_to_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
+            config_array_add "USUARIOS_WEBCONF" "$CMD_USER"
         fi
         audit_log "USER_PROMOTED" "root" "user=$CMD_USER,exec=$CMD_EXEC,webconf=$CMD_WEBCONF"
         log_ok "Usuário promovido: $CMD_USER (exec=$CMD_EXEC, webconf=$CMD_WEBCONF)"
@@ -3855,14 +3924,18 @@ cmd_demote() {
     if [[ "$CMD_EXEC" == false && "$CMD_WEBCONF" == false ]]; then
         remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
         remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
+        config_array_remove "USUARIOS_EXEC" "$CMD_USER"
+        config_array_remove "USUARIOS_WEBCONF" "$CMD_USER"
         audit_log "USER_DEMOTED" "root" "user=$CMD_USER,exec=true,webconf=true"
         log_ok "Usuário rebaixado (exec e webconf removidos): $CMD_USER"
     else
         if [[ "$CMD_EXEC" == true ]]; then
             remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+            config_array_remove "USUARIOS_EXEC" "$CMD_USER"
         fi
         if [[ "$CMD_WEBCONF" == true ]]; then
             remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
+            config_array_remove "USUARIOS_WEBCONF" "$CMD_USER"
         fi
         audit_log "USER_DEMOTED" "root" "user=$CMD_USER,exec=$CMD_EXEC,webconf=$CMD_WEBCONF"
         log_ok "Usuário rebaixado: $CMD_USER (exec=$CMD_EXEC, webconf=$CMD_WEBCONF)"
