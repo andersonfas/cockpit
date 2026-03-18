@@ -49,7 +49,7 @@ readonly CONFIG_DIR="/etc/devs-permissions"
 readonly DATA_DIR="/var/lib/devs_permissions"
 readonly LOG_DIR="/var/log/devs_audit"
 readonly BACKUP_DIR="/var/backups/devs_permissions"
-readonly CLI_SYMLINK="/usr/local/bin/devs-permissions"
+readonly CLI_SYMLINK="/usr/bin/devs-permissions"
 
 # Variavel para rastrear se clonamos o repo (para cleanup)
 CLONED_DIR=""
@@ -435,6 +435,9 @@ CONF
 create_cli_symlink() {
     header "Criando symlink CLI"
 
+    # Remove symlink antigo em /usr/local/bin/ se existir
+    [[ -L "/usr/local/bin/devs-permissions" ]] && rm -f "/usr/local/bin/devs-permissions"
+
     ln -sf "${LIBEXEC_DIR}/devs_permissions_manager.sh" "$CLI_SYMLINK"
 
     if [[ -x "$CLI_SYMLINK" ]]; then
@@ -665,10 +668,14 @@ do_uninstall() {
         info "Manager removido"
     fi
 
-    # Symlink CLI
+    # Symlink CLI (remove ambos os possiveis locais)
     if [[ -L "$CLI_SYMLINK" ]]; then
         rm -f "$CLI_SYMLINK"
         info "Symlink CLI removido"
+    fi
+    if [[ -L "/usr/local/bin/devs-permissions" ]]; then
+        rm -f "/usr/local/bin/devs-permissions"
+        info "Symlink CLI antigo removido (/usr/local/bin)"
     fi
 
     # Limpar diretorio libexec se vazio
