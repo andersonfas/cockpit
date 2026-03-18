@@ -34,7 +34,7 @@ readonly SCRIPT_VERSION="1.0.0"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # GitHub repo para clone remoto
-readonly GITHUB_REPO="https://github.com/andersonfas/devs_permissions_manager.git"
+readonly GITHUB_REPO="https://github.com/andersonfas/cockpit.git"
 
 # Paths FHS
 readonly COCKPIT_DIR="/usr/share/cockpit/devs-permissions"
@@ -698,12 +698,12 @@ show_help() {
     echo "  -h, --help         Mostra esta ajuda"
     echo ""
     echo "EXEMPLOS:"
-    echo "  # Instalacao completa em servidor novo:"
-    echo "  curl -fsSL https://raw.githubusercontent.com/andersonfas/devs_permissions_manager/main/auto-install.sh | sudo bash"
+    echo "  # Instalacao completa em servidor novo (comando unico):"
+    echo "  curl -fsSL https://raw.githubusercontent.com/andersonfas/cockpit/main/auto-install.sh | sudo bash"
     echo ""
     echo "  # Ou clone e instale:"
-    echo "  git clone https://github.com/andersonfas/devs_permissions_manager.git"
-    echo "  cd devs_permissions_manager"
+    echo "  git clone https://github.com/andersonfas/cockpit.git"
+    echo "  cd cockpit"
     echo "  sudo bash auto-install.sh"
     echo ""
 }
