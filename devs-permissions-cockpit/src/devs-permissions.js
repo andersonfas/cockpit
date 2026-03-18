@@ -3,7 +3,7 @@
  * Interface grafica completa para o devs_permissions_manager.sh
  *
  * Comunicacao: cockpit-helper.sh (bridge JSON)
- * Versao: 2.0.0
+ * Versao: 2.1.0
  */
 
 (function () {
