@@ -51,12 +51,19 @@ trap 'error_handler $LINENO "$BASH_COMMAND"' ERR
 #===============================================================================
 readonly SCRIPT_NAME="${0##*/}"
 readonly SCRIPT_VERSION="5.0.0"
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly _SCRIPT_SOURCE="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+readonly SCRIPT_DIR="$(cd "$(dirname "$_SCRIPT_SOURCE")" && pwd)"
 readonly SCRIPT_PID=$$
 readonly LOCK_FILE="/var/run/devs_permissions.lock"
 
-# Configuração padrão
-CONFIG_FILE="${SCRIPT_DIR}/devs_permissions.conf"
+# Configuração padrão - tenta SCRIPT_DIR primeiro, depois /etc/devs-permissions/
+if [[ -f "${SCRIPT_DIR}/devs_permissions.conf" ]]; then
+    CONFIG_FILE="${SCRIPT_DIR}/devs_permissions.conf"
+elif [[ -f "/etc/devs-permissions/devs_permissions.conf" ]]; then
+    CONFIG_FILE="/etc/devs-permissions/devs_permissions.conf"
+else
+    CONFIG_FILE="${SCRIPT_DIR}/devs_permissions.conf"
+fi
 
 #===============================================================================
 # VARIÁVEIS PADRÃO (podem ser sobrescritas pelo config)
