@@ -6,7 +6,7 @@ function debug(...args) {
         console.debug('login:', ...args);
 }
 
-(function(console) {
+(function() {
     let localStorage;
 
     /* Some browsers fail localStorage access due to corruption, preventing Cockpit login */
@@ -61,8 +61,6 @@ function debug(...args) {
     }
 
     function translate() {
-        if (!document.querySelectorAll)
-            return;
         const list = document.querySelectorAll("[translate]");
         for (let i = 0; i < list.length; i++)
             list[i].textContent = gettext(list[i].textContent);
@@ -90,9 +88,6 @@ function debug(...args) {
         }
         return params;
     }
-
-    if (!console)
-        console = function() { };
 
     function id(name) {
         return document.getElementById(name);
@@ -145,8 +140,7 @@ function debug(...args) {
     }
 
     function show_captured_stderr(msg) {
-        if (window.console)
-            console.warn("stderr:", msg);
+        console.warn("stderr:", msg);
 
         hide("#login-wait-validating");
 
@@ -162,8 +156,7 @@ function debug(...args) {
     }
 
     function fatal(msg) {
-        if (window.console)
-            console.warn("fatal:", msg);
+        console.warn("fatal:", msg);
 
         hide("#login-again", "#login-wait-validating");
 
@@ -229,8 +222,7 @@ function debug(...args) {
                 name = "@supports API";
             const errorString = format(_("This web browser is too old to run the Web Console (missing $0)"), name);
 
-            if (window.console)
-                console.warn(errorString);
+            console.warn(errorString);
             id("login-error-message").textContent = errorString;
             show("#unsupported-browser", "#error-group");
             document.body.classList.add("unsupported-browser");
@@ -277,7 +269,6 @@ function debug(...args) {
                req("sessionStorage", window) &&
                req("JSON", window) &&
                req("defineProperty", Object) &&
-               req("console", window) &&
                req("pushState", window.history) &&
                req("textContent", document) &&
                req("replaceAll", String.prototype) &&
@@ -293,10 +284,6 @@ function debug(...args) {
         } else {
             return false;
         }
-    }
-
-    function trim(s) {
-        return s.replace(/^\s+|\s+$/g, '');
     }
 
     /* Sets values for application, url_root and login_path */
@@ -625,7 +612,7 @@ function debug(...args) {
         login_failure(null);
         login_machine = id("server-field").value;
         login_data_host = null;
-        const user = trim(id("login-user-input").value);
+        const user = id("login-user-input").value.trim();
         if (user === "" && !environment.is_cockpit_client) {
             login_failure(_("User name cannot be empty"));
         } else if (need_host() && login_machine === "") {
@@ -948,8 +935,7 @@ function debug(...args) {
         try {
             prompt = window.atob(parts[2]);
         } catch (err) {
-            if (window.console)
-                console.error("Invalid prompt data", err);
+            console.error("Invalid prompt data", err);
             return null;
         }
 
@@ -957,8 +943,7 @@ function debug(...args) {
         try {
             resp = JSON.parse(body);
         } catch (err) {
-            if (window.console)
-                console.log("Got invalid JSON response for prompt data", err);
+            console.log("Got invalid JSON response for prompt data", err);
             resp = {};
         }
 
@@ -994,8 +979,7 @@ function debug(...args) {
                     else
                         fatal(_("Internal error: Invalid challenge header"));
                 } else {
-                    if (window.console)
-                        console.log(xhr.statusText);
+                    console.log(xhr.statusText);
                     /* did the user confirm a changed SSH host key? If so, update database */
                     if (ssh_host_key_change_host) {
                         try {
@@ -1015,7 +999,7 @@ function debug(...args) {
                     if (xhr.statusText.startsWith("captured-stderr:")) {
                         show_captured_stderr(decodeURIComponent(xhr.statusText.replace(/^captured-stderr:/, '')));
                     } else if (xhr.statusText.indexOf("authentication-not-supported") > -1) {
-                        const user = trim(id("login-user-input").value);
+                        const user = id("login-user-input").value.trim();
                         fatal(format(_("The server refused to authenticate '$0' using password authentication, and no other supported authentication methods are available."), user));
                     } else if (xhr.statusText.indexOf("terminated") > -1) {
                         login_failure(_("Authentication failed"), _("Server closed connection"));
@@ -1180,4 +1164,4 @@ function debug(...args) {
     }
 
     window.onload = boot;
-})(window.console);
+})();
