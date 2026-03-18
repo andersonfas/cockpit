@@ -3,23 +3,47 @@
  * SPDX-License-Identifier: LGPL-2.1-or-later
  */
 import cockpit from "cockpit";
-import React, { useContext } from "react";
+import React, { useContext, useEffect, useRef, useState } from "react";
+import { useEvent, useInit } from "hooks";
 import { Breadcrumb, BreadcrumbItem } from "@patternfly/react-core/dist/esm/components/Breadcrumb/index.js";
 import { Button } from "@patternfly/react-core/dist/esm/components/Button/index.js";
 import { Card, CardBody, CardHeader, CardTitle } from '@patternfly/react-core/dist/esm/components/Card/index.js';
 import { Checkbox } from "@patternfly/react-core/dist/esm/components/Checkbox/index.js";
 import { DescriptionList, DescriptionListDescription, DescriptionListGroup, DescriptionListTerm } from "@patternfly/react-core/dist/esm/components/DescriptionList/index.js";
+import { DropdownItem } from "@patternfly/react-core/dist/esm/components/Dropdown/index.js";
+import { Form } from "@patternfly/react-core/dist/esm/components/Form/index.js";
+import { Flex, FlexItem } from "@patternfly/react-core/dist/esm/layouts/Flex/index.js";
 import { Gallery } from "@patternfly/react-core/dist/esm/layouts/Gallery/index.js";
+import { Modal, ModalBody, ModalFooter, ModalHeader } from '@patternfly/react-core/dist/esm/components/Modal/index.js';
 import { Page, PageBreadcrumb, PageSection } from "@patternfly/react-core/dist/esm/components/Page/index.js";
+import { Progress } from "@patternfly/react-core/dist/esm/components/Progress/index.js";
+import { SearchInput } from "@patternfly/react-core/dist/esm/components/SearchInput/index.js";
+import { Spinner } from "@patternfly/react-core/dist/esm/components/Spinner/index.js";
 import { Switch } from "@patternfly/react-core/dist/esm/components/Switch/index.js";
+import { Tooltip } from "@patternfly/react-core/dist/esm/components/Tooltip/index.js";
+import { SortByDirection } from '@patternfly/react-table';
+import {
+    ConnectedIcon,
+    DisconnectedIcon,
+    LockIcon,
+    LockOpenIcon,
+    PlusIcon,
+    RedoIcon,
+    ThumbtackIcon,
+} from "@patternfly/react-icons";
 
+import { KebabDropdown } from "cockpit-components-dropdown";
+import { ListingTable } from "cockpit-components-table.jsx";
 import { Privileged } from "cockpit-components-privileged.jsx";
+import { distanceToNow } from "timeformat";
+import { fmt_to_fragments } from 'utils.jsx';
+import { useDialogs } from "dialogs.jsx";
 
 import { ModelContext } from './model-context.jsx';
 import { NetworkInterfaceMembers } from "./network-interface-members.jsx";
 import { NetworkAction } from './dialogs-common.jsx';
 import { NetworkPlots } from "./plots";
-import { fmt_to_fragments } from 'utils.jsx';
+import * as utils from "./utils.js";
 
 import {
     array_join,
@@ -30,6 +54,7 @@ import {
     is_managed,
     render_active_connection,
     settings_applier,
+    show_error_dialog,
     show_unexpected_error,
     syn_click,
     with_checkpoint,
@@ -44,7 +69,147 @@ import {
 
 import { get_ip_method_choices } from './ip-settings.jsx';
 
+import {
+    useDialogState,
+    DialogError, DialogErrorMessage,
+    DialogTextInput,
+    DialogPasswordInput,
+    DialogDropdownSelect,
+    DialogActionButton, DialogCancelButton,
+} from 'cockpit/dialog';
+
 const _ = cockpit.gettext;
+
+// known networks: with ssid; hidden networks: no ssid
+const WiFiConnectDialog = ({ dev, model, ssid: knownSsid, ap }) => {
+    useEvent(model, "changed");
+    const Dialogs = useDialogs();
+
+    const isHidden = !knownSsid;
+    const idPrefix = "network-wifi-connect";
+
+    function validate() {
+        if (isHidden) {
+            dlg.field("ssid").validate(val => {
+                if (val.trim() === "")
+                    return _("SSID can not be empty");
+            });
+        }
+        if (!isHidden || dlg.values.security != "none") {
+            dlg.field("password").validate(val => {
+                if (val.trim() === "")
+                    return _("Password can not be empty");
+            });
+        }
+    }
+
+    const dlg = useDialogState({
+        ssid: knownSsid || "",
+        security: "wpa-psk",
+        password: "",
+    }, validate);
+
+    const onConnect = async ({ ssid, security, password }) => {
+        utils.debug("Connecting to", ssid, isHidden ? `with security ${security}` : "with password");
+
+        const settings = {
+            connection: {
+                id: ssid,
+                type: "802-11-wireless",
+                autoconnect: true,
+            },
+            "802-11-wireless": {
+                ssid: utils.ssid_to_nm(ssid),
+                mode: "infrastructure",
+            },
+        };
+
+        if (isHidden) {
+            settings["802-11-wireless"].hidden = true;
+        }
+
+        if (!isHidden || security !== "none") {
+            settings["802-11-wireless-security"] = {
+                "key-mgmt": isHidden ? security : "wpa-psk",
+                psk: password,
+            };
+        }
+
+        let connection = null;
+        try {
+            // ap might be stale if there was a scan since opening the dialog, so pass NULL
+            // NM will find the right AP by SSID
+            const result = await dev.activate_with_settings(settings, null);
+            connection = result.connection;
+
+            dlg.set_cancel(
+                () => {
+                    utils.debug("Cancelling connection to", ssid);
+                    dev.cancel_pending_connection();
+                    connection.delete_()
+                            .catch(err => console.warn("Failed to delete connection:", err));
+                });
+
+            utils.debug("Connection activation started");
+            await dev.wait_connection(ssid);
+            utils.debug("Connected successfully to", ssid);
+        } catch (err) {
+            // just in case something survived, clean up
+            connection?.delete_()
+                    .catch(err => utils.debug("Failed to delete failed connection:", err));
+
+            throw new DialogError(
+                _("Failed to connect"),
+                err.reason === 7 // NM_DEVICE_STATE_REASON_NO_SECRETS
+                    ? _("Check your password.")
+                    : err.toString());
+        }
+    };
+
+    return (
+        <Modal id={idPrefix + "-dialog"}
+               position="top"
+               variant="small"
+               isOpen
+               onClose={Dialogs.close}>
+            <ModalHeader title={isHidden ? _("Connect to hidden network") : cockpit.format(_("Connect to $0"), knownSsid)} />
+            <ModalBody>
+                <DialogErrorMessage dialog={dlg} />
+                <Form id={idPrefix + "-body"} onSubmit={ev => ev.preventDefault()} isHorizontal>
+                    {isHidden && (
+                        <>
+                            <DialogTextInput
+                                label={_("Network name")}
+                                field={dlg.field("ssid")}
+                            />
+                            <DialogDropdownSelect
+                                label={_("Security")}
+                                field={dlg.field("security")}
+                                options={[
+                                    { value: "none", label: _("None") },
+                                    { value: "wpa-psk", label: _("WPA/WPA2 Personal") },
+                                ]}
+                            />
+                        </>
+                    )}
+                    {(!isHidden || dlg.values.security !== "none") && (
+                        <DialogPasswordInput
+                            label={_("Password")}
+                            field={dlg.field("password")}
+                            autoFocus={!isHidden} // eslint-disable-line jsx-a11y/no-autofocus
+                        />
+                    )}
+                </Form>
+            </ModalBody>
+            <ModalFooter>
+                <DialogActionButton dialog={dlg} action={onConnect} onClose={Dialogs.close}>
+                    {_("Connect")}
+                </DialogActionButton>
+                <DialogCancelButton dialog={dlg} onClose={Dialogs.close} />
+            </ModalFooter>
+        </Modal>
+    );
+};
 
 export const NetworkInterfacePage = ({
     privileged,
@@ -55,10 +220,61 @@ export const NetworkInterfacePage = ({
     iface
 }) => {
     const model = useContext(ModelContext);
+    useEvent(model, "changed");
+    const [isScanning, setIsScanning] = useState(false);
+    const [prevAPCount, setPrevAPCount] = useState(0);
+    const [networkSearch, setNetworkSearch] = useState("");
 
     const dev_name = iface.Name;
     const dev = iface.Device;
     const isManaged = iface && (!dev || is_managed(dev));
+
+    const accessPointCount = dev?.DeviceType === '802-11-wireless' ? (dev.AccessPoints?.length || 0) : 0;
+
+    const Dialogs = useDialogs();
+
+    // Trigger (passive) scan on page load for wireless devices on page load
+    useInit(() => {
+        if (dev?.DeviceType === '802-11-wireless') {
+            utils.debug("Requesting initial WiFi scan for", dev_name);
+            dev.request_scan();
+        }
+    });
+
+    // WiFi scanning: re-enable button when APs change or after timeout
+    useEffect(() => {
+        if (isScanning) {
+            if (accessPointCount !== prevAPCount && prevAPCount !== 0)
+                setIsScanning(false);
+            const timer = setTimeout(() => setIsScanning(false), 5000);
+            return () => clearTimeout(timer);
+        }
+        setPrevAPCount(accessPointCount);
+    }, [isScanning, accessPointCount, prevAPCount]);
+
+    // Track stable WiFi network order (by signal strength on first scan, preserved thereafter)
+    const stableAPOrder = useRef([]);
+
+    // Update stable AP order when APs are added/removed
+    useEffect(() => {
+        if (dev?.DeviceType !== '802-11-wireless')
+            return;
+
+        const accessPoints = dev.AccessPoints || [];
+        const currentMACs = new Set(accessPoints.map(ap => ap.HwAddress));
+        const stableMACs = new Set(stableAPOrder.current);
+
+        // Re-sort if APs added/removed
+        const needsResort = currentMACs.size !== stableMACs.size ||
+                           ![...currentMACs].every(mac => stableMACs.has(mac));
+
+        if (needsResort) {
+            // Sort by signal strength
+            const sorted = [...accessPoints].sort((a, b) => b.Strength - a.Strength);
+            // Store MAC addresses
+            stableAPOrder.current = sorted.map(ap => ap.HwAddress);
+        }
+    }, [dev?.AccessPoints, dev?.DeviceType]);
 
     let ghostSettings = null;
     let connectionSettings = null;
@@ -567,6 +783,314 @@ export const NetworkInterfacePage = ({
         ];
     }
 
+    function renderWiFiNetworks() {
+        if (!dev || dev.DeviceType !== '802-11-wireless')
+            return null;
+
+        const accessPoints = dev.AccessPoints || [];
+        if (accessPoints.length === 0)
+            return null;
+
+        const activeSSID = dev.ActiveAccessPoint ? dev.ActiveAccessPoint.Ssid : null;
+
+        function forgetNetwork(ap) {
+            utils.debug("Forgetting network", ap.Ssid);
+
+            if (ap.Connection) {
+                ap.Connection.delete_()
+                        .then(() => utils.debug("Forgot network", ap.Ssid))
+                        .catch(show_unexpected_error);
+            }
+        }
+
+        async function connectToAP(ap) {
+            // we don't show a Connect button for hidden networks
+            cockpit.assert(ap.Ssid);
+            utils.debug("Connecting to", ap.Ssid);
+
+            try {
+                if (ap.Connection) {
+                    // Activate existing connection (which already has password if needed)
+                    utils.debug("Activating existing connection for", ap.Ssid);
+                    await ap.Connection.activate(dev, ap);
+                    utils.debug("Connection activation started for", ap.Ssid);
+                    await dev.wait_connection(ap.Ssid);
+                    utils.debug("Connected successfully to", ap.Ssid);
+                    return;
+                }
+
+                // Create new connection
+                const isSecured = !!(ap.WpaFlags || ap.RsnFlags);
+
+                if (isSecured) {
+                    // Show password dialog for secured networks
+                    utils.debug("Showing password dialog for", ap.Ssid);
+                    Dialogs.show(<WiFiConnectDialog dev={dev} ap={ap} ssid={ap.Ssid} model={model} />);
+                    return;
+                }
+
+                // Create new connection for open networks
+                utils.debug("Creating new connection for", ap.Ssid);
+                const settings = {
+                    connection: {
+                        id: ap.Ssid,
+                        type: "802-11-wireless",
+                        autoconnect: true,
+                    },
+                    "802-11-wireless": {
+                        ssid: utils.ssid_to_nm(ap.Ssid),
+                        mode: "infrastructure",
+                    }
+                };
+
+                // Pass null for specific_object - NM will find the right AP by SSID
+                await dev.activate_with_settings(settings, null);
+                utils.debug("Connection activation started for", ap.Ssid);
+                await dev.wait_connection(ap.Ssid);
+                utils.debug("Connected successfully to", ap.Ssid);
+            } catch (error) {
+                // Provide context-appropriate error message
+                const errorMsg = error.reason === 7 // NM_DEVICE_STATE_REASON_NO_SECRETS
+                    ? _("Network password is not stored. Please forget and reconnect to this network.")
+                    : error.toString();
+                show_error_dialog(
+                    cockpit.format(_("Failed to connect to $0"), ap.Ssid),
+                    errorMsg
+                );
+            }
+        }
+
+        const networkSort = (rows, direction, columnIndex) => {
+            // Separate hidden networks row from named networks rows
+            const hiddenRow = rows.find(r => r.props["data-hidden"]);
+            const namedRows = rows.filter(r => !r.props["data-hidden"]);
+
+            if (columnIndex === 0) {
+                // Network column: simple alphabetical sort, no special cases
+                const sorted = [...namedRows].sort((a, b) =>
+                    a.columns[0].sortKey.localeCompare(b.columns[0].sortKey)
+                );
+                // Always put hidden networks at the bottom
+                const result = direction === SortByDirection.asc ? sorted : sorted.reverse();
+                return hiddenRow ? [...result, hiddenRow] : result;
+            } else {
+                // Signal column (default): group by connected > known > unknown, each sorted by signal strength
+
+                // Separate into groups
+                const activeRows = [];
+                const knownRows = [];
+                const unknownRows = [];
+
+                namedRows.forEach(r => {
+                    const isActive = activeSSID && r.props["data-ssid"] === activeSSID;
+                    if (isActive) {
+                        activeRows.push(r);
+                    } else if (r.props["data-known"]) {
+                        knownRows.push(r);
+                    } else {
+                        unknownRows.push(r);
+                    }
+                });
+
+                // Sort each group by stable signal order
+                // Build a map for O(1) lookups instead of O(n) indexOf
+                const orderMap = new Map();
+                stableAPOrder.current.forEach((mac, index) => orderMap.set(mac, index));
+
+                const sortByStableOrder = (a, b) => {
+                    const aMAC = a.props.key;
+                    const bMAC = b.props.key;
+                    const aOrder = orderMap.get(aMAC);
+                    const bOrder = orderMap.get(bMAC);
+                    if (aOrder === undefined || bOrder === undefined) {
+                        return a.columns[2].sortKey.localeCompare(b.columns[2].sortKey);
+                    }
+                    return aOrder - bOrder;
+                };
+
+                knownRows.sort(sortByStableOrder);
+                unknownRows.sort(sortByStableOrder);
+
+                // Concatenate groups
+                const result = [...activeRows, ...knownRows, ...unknownRows];
+                const sortedResult = direction === SortByDirection.asc ? result : result.reverse();
+                // Always put hidden networks at the bottom
+                return hiddenRow ? [...sortedResult, hiddenRow] : sortedResult;
+            }
+        };
+
+        // Filter by name
+        let filteredVisibleAPs = dev.visibleSsids;
+        if (networkSearch) {
+            const searchLower = networkSearch.toLowerCase();
+            filteredVisibleAPs = dev.visibleSsids.filter(ap => ap.Ssid.toLowerCase().includes(searchLower));
+        }
+
+        const rows = filteredVisibleAPs.map((ap, index) => {
+            const isActive = activeSSID && ap.Ssid === activeSSID;
+            const isSecured = !!(ap.WpaFlags || ap.RsnFlags);
+
+            const securityIcon = isSecured
+                ? <LockIcon aria-label={_("secured")} />
+                : <LockOpenIcon aria-label={_("open")} />;
+
+            const nameContent = (
+                <>
+                    {ap.Ssid}
+                    {isActive && <>{" "} <ConnectedIcon className="nm-icon-connected" /></>}
+                    {!isActive && ap.Connection && <>{" "} <ThumbtackIcon className="nm-icon-known" /></>}
+                </>
+            );
+
+            const timestamp = ap.Connection?.Settings?.connection?.timestamp || 0;
+            const nameColumn = timestamp > 0
+                ? (
+                    <Tooltip content={cockpit.format(_("Last connected: $0"), distanceToNow(timestamp * 1000))}>
+                        <span>{nameContent}</span>
+                    </Tooltip>
+                )
+                : nameContent;
+
+            const signalColumn = (
+                <Progress value={ap.Strength}
+                          label={ap.Strength + "%"}
+                          aria-label={_("Signal strength")}
+                          size="sm" />
+            );
+
+            let actionColumn;
+            if (isActive) {
+                actionColumn = (
+                    <Privileged allowed={privileged}
+                                tooltipId={"wifi-disconnect-" + index}
+                                excuse={_("Not permitted to disconnect network")}>
+                        <Button variant="danger"
+                                size="sm"
+                                icon={<DisconnectedIcon />}
+                                isDisabled={!privileged}
+                                onClick={() => {
+                                    dev.disconnect()
+                                            .then(() => utils.debug("Disconnected successfully from", ap.Ssid))
+                                            .catch(show_unexpected_error);
+                                }}
+                                aria-label={_("Disconnect")}>
+                            {_("Disconnect")}
+                        </Button>
+                    </Privileged>
+                );
+            } else {
+                actionColumn = (
+                    <>
+                        <Privileged allowed={privileged}
+                                    tooltipId={"wifi-connect-" + index}
+                                    excuse={_("Not permitted to connect to network")}>
+                            <Button variant="secondary"
+                                    size="sm"
+                                    icon={<ConnectedIcon />}
+                                    isDisabled={!privileged}
+                                    onClick={() => connectToAP(ap)}
+                                    aria-label={_("Connect")}>
+                                {_("Connect")}
+                            </Button>
+                        </Privileged>
+                        {ap.Connection && (
+                            <>
+                                {" "}
+                                <KebabDropdown
+                                    toggleButtonId={"wifi-kebab-" + index}
+                                    isDisabled={!privileged}
+                                    dropdownItems={[
+                                        <DropdownItem key="forget"
+                                                      className="pf-m-danger"
+                                                      onClick={() => forgetNetwork(ap)}
+                                                      aria-label={_("Forget")}>
+                                            {_("Forget")}
+                                        </DropdownItem>
+                                    ]} />
+                            </>
+                        )}
+                    </>
+                );
+            }
+
+            return {
+                columns: [
+                    { title: nameColumn, sortKey: ap.Ssid, header: true },
+                    { title: <>{securityIcon} {ap.Mode}</>, sortKey: ap.Mode },
+                    { title: signalColumn, sortKey: String(ap.Strength).padStart(3, '0') },
+                    { title: cockpit.format_bits_per_sec(ap.MaxBitrate * 1000) },
+                    { title: actionColumn },
+                ],
+                props: { key: ap.HwAddress, "data-ssid": ap.Ssid, "data-known": !!ap.Connection }
+            };
+        });
+
+        // Add aggregated hidden access points row at the bottom
+        if (dev.hiddenAPCount > 0) {
+            const hiddenLabel = cockpit.ngettext("$0 hidden network", "$0 hidden networks", dev.hiddenAPCount);
+            rows.push({
+                columns: [
+                    { title: cockpit.format(hiddenLabel, dev.hiddenAPCount), sortKey: "zzz-hidden", header: true },
+                    { title: "" },
+                    { title: "" },
+                    { title: "" },
+                    { title: "" },
+                ],
+                props: { key: "hidden-networks", "data-hidden": true }
+            });
+        }
+
+        return (
+            <Card isPlain id="network-interface-wifi-networks">
+                <CardHeader actions={{
+                    actions: (
+                        <Flex>
+                            {dev.visibleSsids.length >= 3 && (
+                                <FlexItem>
+                                    <SearchInput
+                                        placeholder={_("Filter")}
+                                        value={networkSearch}
+                                        onChange={(_event, value) => setNetworkSearch(value)}
+                                        onClear={() => setNetworkSearch("")}
+                                    />
+                                </FlexItem>
+                            )}
+                            <FlexItem>
+                                <Button variant="secondary"
+                                        onClick={() => Dialogs.show(<WiFiConnectDialog dev={dev} model={model} />)}
+                                        icon={<PlusIcon />}>
+                                    {_("Connect to hidden network")}
+                                </Button>
+                            </FlexItem>
+                            <FlexItem>
+                                <Button variant="secondary"
+                                        onClick={() => { setIsScanning(true); dev.request_scan() }}
+                                        isDisabled={isScanning}
+                                        icon={isScanning ? <Spinner size="md" /> : <RedoIcon />}>
+                                    {_("Refresh")}
+                                </Button>
+                            </FlexItem>
+                        </Flex>
+                    )
+                }}>
+                    <CardTitle component="h2">{_("Available networks")}</CardTitle>
+                </CardHeader>
+                <ListingTable aria-label={_("Available networks")}
+                              variant='compact'
+                              columns={[
+                                  { title: _("Network"), header: true, sortable: true },
+                                  { title: _("Mode") },
+                                  { title: _("Signal"), sortable: true },
+                                  { title: _("Rate") },
+                                  { title: "", props: { screenReaderText: _("Actions") } },
+                              ]}
+                              sortBy={{ index: 2, direction: SortByDirection.asc }}
+                              sortMethod={networkSort}
+                              rows={rows} />
+            </Card>
+        );
+    }
+
     function renderConnectionMembers(con) {
         const memberIfaces = { };
         const members = { };
@@ -737,6 +1261,7 @@ export const NetworkInterfacePage = ({
                             : null
                         }
                     </Card>
+                    {renderWiFiNetworks()}
                     {renderConnectionMembers(iface.MainConnection)}
                 </Gallery>
             </PageSection>

@@ -152,6 +152,9 @@ declare -a BLOCKED_COMMANDS=(
     "chmod 777 /"
     "chmod -R 777 /"
 )
+declare -a DOCKER_LOGS_PATTERNS=()
+declare -a DOCKER_CONTAINER_PATTERNS=()
+declare -a PROTECTED_USERS=("root" "sysadmin")
 
 # Flags de execução
 DRY_RUN=false
@@ -172,6 +175,7 @@ CMD_APPROVER=""
 CMD_REQUEST_ID=""
 CMD_ENVIRONMENT=""
 CMD_REMOVE_HOME=false
+CMD_BACKUP_NAME=""
 
 #===============================================================================
 # CORES (detecta se terminal suporta)
@@ -845,6 +849,86 @@ list_backups() {
     echo ""
 }
 
+# Restaura backup
+restore_backup() {
+    local backup_name="$1"
+
+    if [[ -z "$backup_name" ]]; then
+        log_error "Especifique o nome do backup para restaurar"
+        log_error "Use: $SCRIPT_NAME list-backups para ver os disponíveis"
+        return 1
+    fi
+
+    local backup_path="${BACKUP_DIR}/${backup_name}"
+
+    if [[ ! -d "$backup_path" ]]; then
+        log_error "Backup não encontrado: $backup_path"
+        return 1
+    fi
+
+    log_info "Restaurando backup: $backup_name"
+
+    # Cria backup atual antes de restaurar
+    log_info "Criando backup de segurança antes da restauração..."
+    create_backup
+
+    local restored=0
+
+    # Restaura sudoers
+    local sudoers_file
+    sudoers_file=$(find "$backup_path" -maxdepth 1 -name "*.sudoers" -o -name "99-devs-*" 2>/dev/null | head -1)
+    if [[ -n "$sudoers_file" && -f "$sudoers_file" ]]; then
+        if visudo -c -f "$sudoers_file" &>/dev/null; then
+            cp "$sudoers_file" "$SUDO_FILE"
+            chmod 440 "$SUDO_FILE"
+            log_ok "Sudoers restaurado"
+            ((restored++))
+        else
+            log_warn "Sudoers no backup tem erros de sintaxe, ignorando"
+        fi
+    fi
+
+    # Restaura config
+    if [[ -f "$backup_path/devs_permissions.conf" ]]; then
+        cp "$backup_path/devs_permissions.conf" "$CONFIG_FILE"
+        chmod 644 "$CONFIG_FILE"
+        log_ok "Configuração restaurada"
+        ((restored++))
+    fi
+
+    # Restaura docker wrapper
+    if [[ -f "$backup_path/docker" ]]; then
+        cp "$backup_path/docker" "$DOCKER_WRAPPER_PATH"
+        chmod 755 "$DOCKER_WRAPPER_PATH"
+        log_ok "Docker wrapper restaurado"
+        ((restored++))
+    fi
+
+    # Restaura cron
+    if [[ -f "$backup_path/devs_permissions_jobs" ]]; then
+        cp "$backup_path/devs_permissions_jobs" "$CRON_FILE"
+        chmod 644 "$CRON_FILE"
+        log_ok "Cron jobs restaurados"
+        ((restored++))
+    fi
+
+    # Restaura grupos se o arquivo existir
+    if [[ -f "$backup_path/groups.txt" ]]; then
+        log_info "Informações de grupos disponíveis em: $backup_path/groups.txt"
+        log_info "Restauração de membros de grupos requer 'apply' após restaurar config"
+    fi
+
+    if [[ $restored -eq 0 ]]; then
+        log_warn "Nenhum arquivo encontrado para restaurar no backup"
+    else
+        audit_log "BACKUP_RESTORED" "root" "backup=$backup_name,files=$restored"
+        log_ok "Restauração concluída: $restored arquivo(s) restaurado(s)"
+        log_info "Execute '$SCRIPT_NAME apply' para reaplicar as configurações restauradas"
+    fi
+
+    return 0
+}
+
 #===============================================================================
 # GESTÃO DE GRUPOS
 #===============================================================================
@@ -929,26 +1013,28 @@ create_user() {
     chage -d 0 "$user" 2>/dev/null || true
     
     # Salva credenciais
+    mkdir -p "${BACKUP_DIR}/credentials" 2>/dev/null
+    chmod 700 "${BACKUP_DIR}/credentials" 2>/dev/null || true
     local cred_file="${BACKUP_DIR}/credentials/new_user_${user}_$(date +%Y%m%d%H%M%S).cred"
     cat > "$cred_file" << EOF
 ═══════════════════════════════════════════════════════════
- CREDENCIAIS DE ACESSO - DETRAN-CE
+ CREDENCIAIS DE ACESSO
 ═══════════════════════════════════════════════════════════
  Usuário: $user
  Senha temporária: $password
- 
- ⚠️  IMPORTANTE: Troca de senha obrigatória no primeiro login
- 
+
+ IMPORTANTE: Troca de senha obrigatória no primeiro login
+
  Data criação: $(_ts)
  Criado por: ${SUDO_USER:-root}
  Ambiente: $ENVIRONMENT
 ═══════════════════════════════════════════════════════════
 EOF
     chmod 600 "$cred_file"
-    
+
     audit_log "USER_CREATED" "root" "user=$user"
-    log_ok "Usuário criado: $user"
-    log_info "Credenciais: $cred_file"
+    log_ok "Usuário criado: $user | Senha temporária: $password | Troca obrigatória no primeiro login"
+    log_info "Credenciais salvas em: $cred_file"
     
     return 0
 }
@@ -1210,9 +1296,7 @@ DOCKER_GENERAL
                 [[ "$first" != true ]] && echo ", \\"
                 first=false
                 
-                echo "    /usr/bin/vim ${dir}/*.conf, \\"
-                echo "    /usr/bin/vi ${dir}/*.conf, \\"
-                echo "    /usr/bin/nano ${dir}/*.conf, \\"
+                echo "    /usr/bin/sudoedit ${dir}/*.conf, \\"
                 echo "    /usr/bin/cat ${dir}/*.conf, \\"
                 echo "    /usr/bin/less ${dir}/*.conf, \\"
                 echo "    /usr/bin/ls ${dir}, \\"
@@ -1525,9 +1609,7 @@ BASIC_PERMS
                 [[ "$first" != true ]] && echo ", \\"
                 first=false
                 
-                echo "    /usr/bin/vim ${dir}/*.conf, \\"
-                echo "    /usr/bin/vi ${dir}/*.conf, \\"
-                echo "    /usr/bin/nano ${dir}/*.conf, \\"
+                echo "    /usr/bin/sudoedit ${dir}/*.conf, \\"
                 echo "    /usr/bin/cat ${dir}/*.conf, \\"
                 echo "    /usr/bin/less ${dir}/*.conf, \\"
                 echo "    /usr/bin/ls ${dir}, \\"
@@ -1711,32 +1793,33 @@ log_audit "$@"
 # Verifica comandos bloqueados
 check_blocked "$@"
 
-# Se é exec, faz log de sessão
-if [[ "$1" == "exec" ]]; then
-    # Extrai container e comando
-    shift
-    local container=""
-    local exec_cmd=""
-    
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            -it|-ti|-i|-t) shift ;;
-            -*) shift ;;
+# Se é exec, faz log de sessão (extrai info sem consumir $@)
+if [[ "${1:-}" == "exec" ]]; then
+    _container=""
+    _exec_cmd=""
+    _skip_next=false
+    for _arg in "${@:2}"; do
+        if [[ "$_skip_next" == true ]]; then
+            _skip_next=false
+            continue
+        fi
+        case "$_arg" in
+            -it|-ti|-i|-t|--interactive|--tty) ;;
+            -u|--user|-w|--workdir|-e|--env) _skip_next=true ;;
+            -*) ;;
             *)
-                if [[ -z "$container" ]]; then
-                    container="$1"
+                if [[ -z "$_container" ]]; then
+                    _container="$_arg"
                 else
-                    exec_cmd="$exec_cmd $1"
+                    _exec_cmd="$_exec_cmd $_arg"
                 fi
-                shift
                 ;;
         esac
     done
-    
-    log_session "$container" "$exec_cmd"
+    log_session "$_container" "$_exec_cmd"
 fi
 
-# Executa comando real
+# Executa comando real (argumentos originais intactos)
 exec "$REAL_DOCKER" "$@"
 WRAPPER
     
@@ -1817,6 +1900,10 @@ setup_cron_jobs() {
         return 0
     fi
     
+    # Resolve o path absoluto real do script (funciona mesmo via symlink)
+    local real_script_path
+    real_script_path=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${SCRIPT_DIR}/${SCRIPT_NAME}")
+
     cat > "$CRON_FILE" << EOF
 # DevOps Permissions Manager - Cron Jobs
 # Gerado automaticamente em: $(_ts)
@@ -1825,16 +1912,16 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
 
 # Limpeza de acessos temporários expirados (a cada 15 min)
-*/15 * * * * root $SCRIPT_DIR/$SCRIPT_NAME cleanup >/dev/null 2>&1
+*/15 * * * * root ${real_script_path} cleanup >/dev/null 2>&1
 
 # Relatório semanal (segunda-feira às 8h)
-0 8 * * 1 root $SCRIPT_DIR/$SCRIPT_NAME send-report >/dev/null 2>&1
+0 8 * * 1 root ${real_script_path} send-report >/dev/null 2>&1
 
 # Health check diário (6h)
-0 6 * * * root $SCRIPT_DIR/$SCRIPT_NAME health-check >/dev/null 2>&1
+0 6 * * * root ${real_script_path} health-check >/dev/null 2>&1
 
 # Rotação de logs de sessão (domingo 3h - mantém 90 dias)
-0 3 * * 0 root find $SESSION_LOG_DIR -name "*.log" -mtime +90 -delete 2>/dev/null
+0 3 * * 0 root find ${SESSION_LOG_DIR} -name "*.log" -mtime +90 -delete 2>/dev/null
 EOF
     
     chmod 644 "$CRON_FILE"
@@ -2011,32 +2098,36 @@ list_inactive_users() {
     threshold=$(date -d "-${days} days" +%s)
     local count=0
     
-    # Verifica cada usuário dos grupos
+    # Coleta todos os usuários únicos dos grupos
+    local all_members=""
     for group in "$GRUPO_DEV" "$GRUPO_DEV_EXEC"; do
         group_exists "$group" || continue
-        
         local members
         members=$(getent group "$group" | cut -d: -f4)
-        
-        IFS=',' read -ra users <<< "$members"
-        for user in "${users[@]}"; do
-            [[ -z "$user" ]] && continue
-            
-            local last_activity
-            last_activity=$(get_user_last_activity "$user")
-            
-            # Tenta converter para timestamp
-            local activity_ts=0
-            if [[ "$last_activity" != "Nunca" ]]; then
-                activity_ts=$(date -d "$last_activity" +%s 2>/dev/null || echo "0")
-            fi
-            
-            if [[ $activity_ts -lt $threshold ]]; then
-                printf "  %-20s  Última atividade: %s\n" "$user" "$last_activity"
-                ((count++))
-            fi
-        done
+        [[ -n "$members" ]] && all_members="${all_members:+${all_members},}${members}"
     done
+
+    # Deduplica
+    local unique_users
+    unique_users=$(echo "$all_members" | tr ',' '\n' | sort -u | grep -v '^$')
+
+    while IFS= read -r user; do
+        [[ -z "$user" ]] && continue
+
+        local last_activity
+        last_activity=$(get_user_last_activity "$user")
+
+        # Tenta converter para timestamp
+        local activity_ts=0
+        if [[ "$last_activity" != "Nunca" ]]; then
+            activity_ts=$(date -d "$last_activity" +%s 2>/dev/null || echo "0")
+        fi
+
+        if [[ $activity_ts -lt $threshold ]]; then
+            printf "  %-20s  Última atividade: %s\n" "$user" "$last_activity"
+            ((count++))
+        fi
+    done <<< "$unique_users"
     
     echo ""
     echo "  Total: $count usuários inativos"
@@ -2145,14 +2236,26 @@ create_request() {
     
     mkdir -p "$REQUESTS_DIR"
     
+    # Escape JSON special characters in reason
+    local safe_reason="${reason//\\/\\\\}"
+    safe_reason="${safe_reason//\"/\\\"}"
+    safe_reason="${safe_reason//$'\n'/\\n}"
+    safe_reason="${safe_reason//$'\t'/\\t}"
+
+    # Validate hours is numeric
+    if ! [[ "$hours" =~ ^[0-9]+$ ]]; then
+        log_error "Horas deve ser um número: $hours"
+        return 1
+    fi
+
     cat > "${REQUESTS_DIR}/${request_id}.json" << EOF
 {
-    "id": "$request_id",
+    "request_id": "$request_id",
     "user": "$user",
     "hours": $hours,
-    "reason": "$reason",
+    "reason": "$safe_reason",
     "status": "pending",
-    "created_at": "$(_ts)",
+    "timestamp": "$(_ts)",
     "created_by": "${SUDO_USER:-$user}",
     "environment": "$ENVIRONMENT"
 }
@@ -3054,10 +3157,16 @@ cmd_apply() {
         return 0
     fi
     
+    # Adquire lock para evitar execução concorrente
+    if ! acquire_lock; then
+        log_error "Não foi possível adquirir lock. Outro processo em execução?"
+        return 1
+    fi
+
     # Executa
     init_directories
     create_backup
-    
+
     # Cria grupos
     ensure_group_exists "$GRUPO_DEV"
     ensure_group_exists "$GRUPO_DEV_EXEC"
@@ -3123,6 +3232,8 @@ cmd_apply() {
     echo "  3. Verifique: $SCRIPT_NAME status"
     echo "  4. Dashboard: $SCRIPT_NAME dashboard"
     echo ""
+
+    release_lock
 }
 
 #===============================================================================
@@ -3227,7 +3338,7 @@ list_orphan_users() {
     echo ""
     
     # Salva lista para uso pelo cleanup
-    printf '%s\n' "${orphan_users[@]}" > /tmp/devs_orphan_users.list
+    printf '%s\n' "${orphan_users[@]}" > ${BACKUP_DIR}/orphan_users.list
     
     return 0
 }
@@ -3243,7 +3354,7 @@ cleanup_orphan_users() {
     list_orphan_users
     
     # Verifica se há órfãos
-    if [[ ! -f /tmp/devs_orphan_users.list ]]; then
+    if [[ ! -f ${BACKUP_DIR}/orphan_users.list ]]; then
         log_info "Nenhum usuário órfão para limpar"
         return 0
     fi
@@ -3251,11 +3362,11 @@ cleanup_orphan_users() {
     local -a orphan_users=()
     while IFS= read -r user; do
         [[ -n "$user" ]] && orphan_users+=("$user")
-    done < /tmp/devs_orphan_users.list
+    done < ${BACKUP_DIR}/orphan_users.list
     
     if [[ ${#orphan_users[@]} -eq 0 ]]; then
         log_info "Nenhum usuário órfão para limpar"
-        rm -f /tmp/devs_orphan_users.list
+        rm -f ${BACKUP_DIR}/orphan_users.list
         return 0
     fi
     
@@ -3269,18 +3380,22 @@ cleanup_orphan_users() {
     
     if [[ "$DRY_RUN" == true ]]; then
         log_dry "Usuários que seriam deletados: ${orphan_users[*]}"
-        rm -f /tmp/devs_orphan_users.list
+        rm -f ${BACKUP_DIR}/orphan_users.list
         return 0
     fi
     
-    # Confirmação com palavra-chave
-    echo -e "  Digite ${YELLOW}DELETAR${NC} para confirmar a remoção:"
-    read -r -p "  > " confirm
-    
-    if [[ "$confirm" != "DELETAR" ]]; then
-        log_info "Operação cancelada"
-        rm -f /tmp/devs_orphan_users.list
-        return 0
+    # Confirmação com palavra-chave (pulada em modo --force, ex: via Cockpit)
+    if [[ "$FORCE" == true ]]; then
+        log_info "Modo --force ativo, pulando confirmação interativa"
+    else
+        echo -e "  Digite ${YELLOW}DELETAR${NC} para confirmar a remoção:"
+        read -r -p "  > " confirm
+
+        if [[ "$confirm" != "DELETAR" ]]; then
+            log_info "Operação cancelada"
+            rm -f ${BACKUP_DIR}/orphan_users.list
+            return 0
+        fi
     fi
     
     echo ""
@@ -3301,10 +3416,9 @@ cleanup_orphan_users() {
             continue
         fi
         
-        # Lista de usuários protegidos
-        local protected_users=("root" "sysadmin" "anderson.santos" "alison.araujo" "manoel.silva" "ivan.lima")
+        # Lista de usuários protegidos (configurável via PROTECTED_USERS no config)
         local is_protected=false
-        for pu in "${protected_users[@]}"; do
+        for pu in "${PROTECTED_USERS[@]}"; do
             [[ "$user" == "$pu" ]] && is_protected=true && break
         done
         
@@ -3362,7 +3476,7 @@ cleanup_orphan_users() {
         fi
     done
     
-    rm -f /tmp/devs_orphan_users.list
+    rm -f ${BACKUP_DIR}/orphan_users.list
     
     echo ""
     log_ok "Limpeza concluída: $deleted usuários removidos"
@@ -3415,29 +3529,80 @@ cmd_remove() {
     log_info "Nota: Grupos e usuários NÃO foram removidos"
 }
 
+# ══════════════════════════════════════════════════════════════════════════════
+# HELPERS: Sincronizar arrays do config com alterações da interface
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Adiciona usuario a um array no config (ex: USUARIOS, USUARIOS_EXEC, USUARIOS_WEBCONF)
+config_array_add() {
+    local array_name="$1" username="$2"
+    [[ ! -f "$CONFIG_FILE" ]] && return 1
+
+    # Verificar se já existe no array
+    if sed -n "/^${array_name}=(/,/)/p" "$CONFIG_FILE" | grep -q "\"$username\""; then
+        return 0  # já existe
+    fi
+
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+
+    # Inserir no array existente ou criar o array
+    if grep -q "^${array_name}=(" "$CONFIG_FILE"; then
+        sed -i "/^${array_name}=(/,/)/{
+            /)/i\\    \"$username\"
+        }" "$CONFIG_FILE"
+    else
+        printf '\n%s=(\n    "%s"\n)\n' "$array_name" "$username" >> "$CONFIG_FILE"
+    fi
+}
+
+# Remove usuario de um array no config
+config_array_remove() {
+    local array_name="$1" username="$2"
+    [[ ! -f "$CONFIG_FILE" ]] && return 0
+
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+    sed -i "/^${array_name}=(/,/)/{/\"$username\"/d}" "$CONFIG_FILE"
+}
+
 # Comando: add-user
 cmd_add_user() {
     if [[ -z "$CMD_USER" ]]; then
         log_error "Use --user NOME"
         return 1
     fi
-    
+
     log_info "Adicionando usuário: $CMD_USER"
-    
-    # Garante grupos
-    ensure_group_exists "$GRUPO_DEV"
+
+    # Garante grupos existem
+    if ! ensure_group_exists "$GRUPO_DEV"; then
+        log_error "Falha ao criar grupo base: $GRUPO_DEV"
+        return 1
+    fi
     [[ "$CMD_EXEC" == true ]] && ensure_group_exists "$GRUPO_DEV_EXEC"
     [[ "$CMD_WEBCONF" == true ]] && ensure_group_exists "$GRUPO_DEV_WEBCONF"
-    
-    # Cria usuário
-    create_user "$CMD_USER" "$GRUPO_DEV"
-    add_user_to_group "$CMD_USER" "$GRUPO_DEV"
-    
+
+    # Cria usuário no sistema (se não existir)
+    if ! create_user "$CMD_USER" "$GRUPO_DEV"; then
+        log_error "Falha ao criar usuário: $CMD_USER"
+        return 1
+    fi
+
+    # Adiciona ao grupo básico
+    if ! add_user_to_group "$CMD_USER" "$GRUPO_DEV"; then
+        log_error "Falha ao adicionar $CMD_USER ao grupo $GRUPO_DEV"
+        return 1
+    fi
+
     [[ "$CMD_EXEC" == true ]] && add_user_to_group "$CMD_USER" "$GRUPO_DEV_EXEC"
     [[ "$CMD_WEBCONF" == true ]] && add_user_to_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
-    
+
+    # Sincroniza config
+    config_array_add "USUARIOS" "$CMD_USER"
+    [[ "$CMD_EXEC" == true ]] && config_array_add "USUARIOS_EXEC" "$CMD_USER"
+    [[ "$CMD_WEBCONF" == true ]] && config_array_add "USUARIOS_WEBCONF" "$CMD_USER"
+
     configure_user_bashrc "$CMD_USER"
-    
+
     audit_log "USER_ADDED" "root" "user=$CMD_USER,exec=$CMD_EXEC,webconf=$CMD_WEBCONF"
     log_ok "Usuário adicionado: $CMD_USER"
 }
@@ -3454,13 +3619,96 @@ cmd_remove_user() {
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV"
-    
+
+    # Sincroniza config
+    config_array_remove "USUARIOS" "$CMD_USER"
+    config_array_remove "USUARIOS_EXEC" "$CMD_USER"
+    config_array_remove "USUARIOS_WEBCONF" "$CMD_USER"
+
     # Remove acesso temporário se houver
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.expiry" 2>/dev/null
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.reason" 2>/dev/null
-    
+
     audit_log "USER_REMOVED" "root" "user=$CMD_USER"
     log_ok "Permissões removidas: $CMD_USER"
+}
+
+# Comando: disable-user (bloqueia conta + remove de todos os grupos)
+cmd_disable_user() {
+    if [[ -z "$CMD_USER" ]]; then
+        log_error "Use --user NOME"
+        return 1
+    fi
+
+    if ! user_exists "$CMD_USER"; then
+        log_error "Usuário não existe: $CMD_USER"
+        return 1
+    fi
+
+    log_info "Desativando usuário: $CMD_USER"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log_dry "usermod -L $CMD_USER"
+        return 0
+    fi
+
+    # Remove de todos os grupos de permissão
+    remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+    remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
+    remove_user_from_group "$CMD_USER" "$GRUPO_DEV"
+
+    # Sincroniza config
+    config_array_remove "USUARIOS" "$CMD_USER"
+    config_array_remove "USUARIOS_EXEC" "$CMD_USER"
+    config_array_remove "USUARIOS_WEBCONF" "$CMD_USER"
+
+    # Remove acesso temporário
+    rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.expiry" 2>/dev/null
+    rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.reason" 2>/dev/null
+
+    # Bloqueia a conta no sistema (impede login)
+    usermod -L "$CMD_USER" 2>/dev/null && log_ok "Conta bloqueada: $CMD_USER" || log_warn "Não foi possível bloquear conta"
+
+    # Expira a conta
+    usermod --expiredate 1 "$CMD_USER" 2>/dev/null
+
+    audit_log "USER_DISABLED" "root" "user=$CMD_USER"
+    log_ok "Usuário desativado: $CMD_USER"
+}
+
+# Comando: enable-user (desbloqueia conta + adiciona ao grupo básico)
+cmd_enable_user() {
+    if [[ -z "$CMD_USER" ]]; then
+        log_error "Use --user NOME"
+        return 1
+    fi
+
+    if ! user_exists "$CMD_USER"; then
+        log_error "Usuário não existe: $CMD_USER"
+        return 1
+    fi
+
+    log_info "Reativando usuário: $CMD_USER"
+
+    if [[ "$DRY_RUN" == true ]]; then
+        log_dry "usermod -U $CMD_USER"
+        return 0
+    fi
+
+    # Desbloqueia a conta
+    usermod -U "$CMD_USER" 2>/dev/null && log_ok "Conta desbloqueada: $CMD_USER" || log_warn "Não foi possível desbloquear conta"
+
+    # Remove expiração
+    usermod --expiredate "" "$CMD_USER" 2>/dev/null
+
+    # Adiciona ao grupo básico
+    add_user_to_group "$CMD_USER" "$GRUPO_DEV"
+
+    # Sincroniza config
+    config_array_add "USUARIOS" "$CMD_USER"
+
+    audit_log "USER_ENABLED" "root" "user=$CMD_USER"
+    log_ok "Usuário reativado: $CMD_USER"
 }
 
 # Comando: reset-user
@@ -3486,11 +3734,16 @@ cmd_reset_user() {
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV"
-    
+
+    # Sincroniza config
+    config_array_remove "USUARIOS" "$CMD_USER"
+    config_array_remove "USUARIOS_EXEC" "$CMD_USER"
+    config_array_remove "USUARIOS_WEBCONF" "$CMD_USER"
+
     # Remove acesso temporário
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.expiry" 2>/dev/null
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.reason" 2>/dev/null
-    
+
     # Limpa .bashrc
     local user_home
     user_home=$(getent passwd "$CMD_USER" | cut -d: -f6)
@@ -3561,12 +3814,17 @@ cmd_delete_user() {
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
     remove_user_from_group "$CMD_USER" "$GRUPO_DEV"
-    
+
+    # Sincroniza config
+    config_array_remove "USUARIOS" "$CMD_USER"
+    config_array_remove "USUARIOS_EXEC" "$CMD_USER"
+    config_array_remove "USUARIOS_WEBCONF" "$CMD_USER"
+
     # Remove arquivos de acesso temporário
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.expiry" 2>/dev/null
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.reason" 2>/dev/null
     rm -f "${TEMP_ACCESS_DIR}/${CMD_USER}.lastactivity" 2>/dev/null
-    
+
     # Encerra processos
     pkill -u "$CMD_USER" 2>/dev/null || true
     sleep 1
@@ -3619,17 +3877,40 @@ cmd_promote() {
         log_error "Use --user NOME"
         return 1
     fi
-    
+
     if ! user_exists "$CMD_USER"; then
         log_error "Usuário não existe: $CMD_USER"
         return 1
     fi
-    
-    ensure_group_exists "$GRUPO_DEV_EXEC"
-    add_user_to_group "$CMD_USER" "$GRUPO_DEV_EXEC"
-    
-    audit_log "USER_PROMOTED" "root" "user=$CMD_USER"
-    log_ok "Usuário promovido para exec: $CMD_USER"
+
+    # Garante que o usuario esteja no grupo basico
+    ensure_group_exists "$GRUPO_DEV"
+    add_user_to_group "$CMD_USER" "$GRUPO_DEV"
+
+    # Sincroniza config - garante usuario no array basico
+    config_array_add "USUARIOS" "$CMD_USER"
+
+    # Se nenhuma flag especificada, promove para exec (compatibilidade)
+    if [[ "$CMD_EXEC" == false && "$CMD_WEBCONF" == false ]]; then
+        ensure_group_exists "$GRUPO_DEV_EXEC"
+        add_user_to_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+        config_array_add "USUARIOS_EXEC" "$CMD_USER"
+        audit_log "USER_PROMOTED" "root" "user=$CMD_USER,exec=true"
+        log_ok "Usuário promovido para exec: $CMD_USER"
+    else
+        if [[ "$CMD_EXEC" == true ]]; then
+            ensure_group_exists "$GRUPO_DEV_EXEC"
+            add_user_to_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+            config_array_add "USUARIOS_EXEC" "$CMD_USER"
+        fi
+        if [[ "$CMD_WEBCONF" == true ]]; then
+            ensure_group_exists "$GRUPO_DEV_WEBCONF"
+            add_user_to_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
+            config_array_add "USUARIOS_WEBCONF" "$CMD_USER"
+        fi
+        audit_log "USER_PROMOTED" "root" "user=$CMD_USER,exec=$CMD_EXEC,webconf=$CMD_WEBCONF"
+        log_ok "Usuário promovido: $CMD_USER (exec=$CMD_EXEC, webconf=$CMD_WEBCONF)"
+    fi
 }
 
 # Comando: demote
@@ -3638,11 +3919,27 @@ cmd_demote() {
         log_error "Use --user NOME"
         return 1
     fi
-    
-    remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
-    
-    audit_log "USER_DEMOTED" "root" "user=$CMD_USER"
-    log_ok "Usuário removido do exec: $CMD_USER"
+
+    # Se nenhuma flag especificada, remove ambos (compatibilidade)
+    if [[ "$CMD_EXEC" == false && "$CMD_WEBCONF" == false ]]; then
+        remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+        remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
+        config_array_remove "USUARIOS_EXEC" "$CMD_USER"
+        config_array_remove "USUARIOS_WEBCONF" "$CMD_USER"
+        audit_log "USER_DEMOTED" "root" "user=$CMD_USER,exec=true,webconf=true"
+        log_ok "Usuário rebaixado (exec e webconf removidos): $CMD_USER"
+    else
+        if [[ "$CMD_EXEC" == true ]]; then
+            remove_user_from_group "$CMD_USER" "$GRUPO_DEV_EXEC"
+            config_array_remove "USUARIOS_EXEC" "$CMD_USER"
+        fi
+        if [[ "$CMD_WEBCONF" == true ]]; then
+            remove_user_from_group "$CMD_USER" "$GRUPO_DEV_WEBCONF"
+            config_array_remove "USUARIOS_WEBCONF" "$CMD_USER"
+        fi
+        audit_log "USER_DEMOTED" "root" "user=$CMD_USER,exec=$CMD_EXEC,webconf=$CMD_WEBCONF"
+        log_ok "Usuário rebaixado: $CMD_USER (exec=$CMD_EXEC, webconf=$CMD_WEBCONF)"
+    fi
 }
 
 # Comando: grant-temp
@@ -4003,6 +4300,10 @@ parse_args() {
                 CMD_REMOVE_HOME=true
                 shift
                 ;;
+            --backup)
+                CMD_BACKUP_NAME="$2"
+                shift 2
+                ;;
             -*)
                 log_error "Opção desconhecida: $1"
                 echo "Use -h para ajuda"
@@ -4055,6 +4356,8 @@ main() {
             ;;
         add-user)        cmd_add_user ;;
         remove-user)     cmd_remove_user ;;
+        disable-user)    cmd_disable_user ;;
+        enable-user)     cmd_enable_user ;;
         reset-user)      cmd_reset_user ;;
         delete-user)     cmd_delete_user ;;
         promote)         cmd_promote ;;
@@ -4083,8 +4386,9 @@ main() {
             ;;
         backup)          create_backup ;;
         list-backups)    list_backups ;;
+        restore-backup)  restore_backup "${CMD_BACKUP_NAME:-$CMD_USER}" ;;
         send-report)     send_report ;;
-        generate-html)   generate_dashboard_html "${CMD_USER:-/var/www/html/devs-dashboard/index.html}" ;;
+        generate-html)   generate_dashboard_html "$DASHBOARD_DIR/index.html" ;;
         sync)            sync_group_members ;;
         list-orphans)    list_orphan_users ;;
         cleanup-users)   cleanup_orphan_users ;;
@@ -4095,15 +4399,6 @@ main() {
             ;;
     esac
 }
-
-#===============================================================================
-# EXECUÇÃO
-#===============================================================================
-
-# Só executa se for o script principal (não se for source)
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
 
 #===============================================================================
 # GERAÇÃO DE DASHBOARD HTML
@@ -4355,3 +4650,12 @@ HTMLEOF
     chmod 644 "$output_file"
     log_ok "Dashboard gerado: $output_file"
 }
+
+#===============================================================================
+# EXECUÇÃO
+#===============================================================================
+
+# Só executa se for o script principal (não se for source)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

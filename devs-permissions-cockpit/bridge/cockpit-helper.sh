@@ -1,0 +1,921 @@
+#!/usr/bin/env bash
+#===============================================================================
+#
+#   ARQUIVO: cockpit-helper.sh
+#   DESCRIÇÃO: Bridge entre o plugin Cockpit e o devs_permissions_manager.sh
+#              Retorna dados estruturados em JSON para consumo do frontend.
+#
+#   INSTALAÇÃO: /usr/libexec/devs-permissions/cockpit-helper.sh
+#
+#   SEGURANÇA: Este script é executado via cockpit.spawn() com superuser.
+#              Todas as entradas são sanitizadas antes de passar ao manager.
+#
+#===============================================================================
+
+set -o nounset
+set -o pipefail
+
+readonly HELPER_VERSION="2.0.0"
+readonly MANAGER_SCRIPT="/usr/libexec/devs-permissions/devs_permissions_manager.sh"
+readonly CONFIG_FILE="/etc/devs-permissions/devs_permissions.conf"
+
+# Caminhos de dados (devem corresponder ao manager)
+readonly TEMP_ACCESS_DIR="/var/lib/devs_permissions/temp_access"
+readonly REQUESTS_DIR="/var/lib/devs_permissions/requests"
+readonly AUDIT_LOG_DIR="/var/log/devs_audit"
+readonly AUDIT_LOG_FILE="${AUDIT_LOG_DIR}/docker_audit.log"
+readonly BACKUP_DIR="/var/backups/devs_permissions"
+
+# Grupos padrão (podem ser sobrescritos pela config)
+GRUPO_DEV="devs"
+GRUPO_DEV_EXEC="devs_exec"
+GRUPO_DEV_WEBCONF="devs_webconf"
+
+#===============================================================================
+# UTILIDADES
+#===============================================================================
+
+json_escape() {
+    local str="$1"
+    str="${str//\\/\\\\}"
+    str="${str//\"/\\\"}"
+    str="${str//$'\n'/\\n}"
+    str="${str//$'\r'/}"
+    str="${str//$'\t'/\\t}"
+    printf '%s' "$str"
+}
+
+json_string() {
+    printf '"%s"' "$(json_escape "$1")"
+}
+
+sanitize_input() {
+    local input="$1"
+    # Remove caracteres perigosos, permite alfanuméricos, ponto, hífen, underscore
+    echo "$input" | sed 's/[^a-zA-Z0-9._-]//g'
+}
+
+sanitize_reason() {
+    local input="$1"
+    # Para motivos, permite mais caracteres mas remove metacaracteres shell
+    echo "$input" | sed "s/['\"\`\$|;&<>()!{}]//g" | head -c 200
+}
+
+sanitize_config_value() {
+    local input="$1"
+    # Remove metacaracteres shell que poderiam ser executados ao fazer source do config
+    # Permite: alfanuméricos, espaços, ponto, hífen, underscore, barra, dois-pontos, arroba, vírgula
+    echo "$input" | sed 's/[`$();&|!<>{}\\]//g' | sed "s/['\"]//g" | head -c 500
+}
+
+load_config_vars() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local val
+        val=$(grep -m1 '^GRUPO_DEV=' "$CONFIG_FILE" 2>/dev/null | sed 's/^GRUPO_DEV="\?\([^"]*\)"\?/\1/')
+        [[ -n "$val" ]] && GRUPO_DEV="$val"
+        val=$(grep -m1 '^GRUPO_DEV_EXEC=' "$CONFIG_FILE" 2>/dev/null | sed 's/^GRUPO_DEV_EXEC="\?\([^"]*\)"\?/\1/')
+        [[ -n "$val" ]] && GRUPO_DEV_EXEC="$val"
+        val=$(grep -m1 '^GRUPO_DEV_WEBCONF=' "$CONFIG_FILE" 2>/dev/null | sed 's/^GRUPO_DEV_WEBCONF="\?\([^"]*\)"\?/\1/')
+        [[ -n "$val" ]] && GRUPO_DEV_WEBCONF="$val"
+    fi
+}
+
+get_group_members() {
+    local group="$1"
+    local members
+    members=$(getent group "$group" 2>/dev/null | cut -d: -f4)
+    echo "$members"
+}
+
+epoch_now() {
+    date '+%s'
+}
+
+#===============================================================================
+# COMANDOS - DADOS PARA DASHBOARD
+#===============================================================================
+
+cmd_get_overview() {
+    load_config_vars
+
+    local basic_members exec_members webconf_members
+    basic_members=$(get_group_members "$GRUPO_DEV")
+    exec_members=$(get_group_members "$GRUPO_DEV_EXEC")
+    webconf_members=$(get_group_members "$GRUPO_DEV_WEBCONF")
+
+    local basic_count=0 exec_count=0 webconf_count=0
+    [[ -n "$basic_members" ]] && basic_count=$(echo "$basic_members" | tr ',' '\n' | grep -c . || true)
+    [[ -n "$exec_members" ]] && exec_count=$(echo "$exec_members" | tr ',' '\n' | grep -c . || true)
+    [[ -n "$webconf_members" ]] && webconf_count=$(echo "$webconf_members" | tr ',' '\n' | grep -c . || true)
+
+    local temp_count=0 pending_count=0
+    if [[ -d "$TEMP_ACCESS_DIR" ]]; then
+        temp_count=$(find "$TEMP_ACCESS_DIR" -name "*.expiry" -type f 2>/dev/null | wc -l)
+    fi
+    if [[ -d "$REQUESTS_DIR" ]]; then
+        pending_count=$(find "$REQUESTS_DIR" -name "*.json" -type f 2>/dev/null | while read -r f; do
+            grep -l '"status".*"pending"' "$f" 2>/dev/null
+        done | wc -l)
+    fi
+
+    # Extrair dados da config
+    local environment="unknown" team_count=0
+    if [[ -f "$CONFIG_FILE" ]]; then
+        environment=$(grep -m1 '^ENVIRONMENT=' "$CONFIG_FILE" 2>/dev/null | sed 's/^ENVIRONMENT="\?\([^"]*\)"\?/\1/' || echo "unknown")
+        # Contar times
+        local teams_line
+        teams_line=$(sed -n '/^TEAMS=(/,/)/p' "$CONFIG_FILE" 2>/dev/null | grep '"' | wc -l)
+        team_count=$teams_line
+    fi
+
+    cat <<EOF
+{
+    "status": "ok",
+    "environment": $(json_string "$environment"),
+    "counts": {
+        "basic": $basic_count,
+        "exec": $exec_count,
+        "webconf": $webconf_count,
+        "temp_access": $temp_count,
+        "pending_requests": $pending_count,
+        "teams": $team_count
+    },
+    "groups": {
+        "basic": $(json_string "$basic_members"),
+        "exec": $(json_string "$exec_members"),
+        "webconf": $(json_string "$webconf_members")
+    }
+}
+EOF
+}
+
+#===============================================================================
+# COMANDOS - LISTAR USUÁRIOS DETALHADOS
+#===============================================================================
+
+cmd_list_users() {
+    load_config_vars
+
+    local basic_members exec_members webconf_members
+    basic_members=$(get_group_members "$GRUPO_DEV")
+    exec_members=$(get_group_members "$GRUPO_DEV_EXEC")
+    webconf_members=$(get_group_members "$GRUPO_DEV_WEBCONF")
+
+    # Coletar todos os usuários únicos (dos grupos)
+    local all_users=""
+    [[ -n "$basic_members" ]] && all_users="$basic_members"
+    if [[ -n "$exec_members" ]]; then
+        [[ -n "$all_users" ]] && all_users="${all_users},${exec_members}" || all_users="$exec_members"
+    fi
+    if [[ -n "$webconf_members" ]]; then
+        [[ -n "$all_users" ]] && all_users="${all_users},${webconf_members}" || all_users="$webconf_members"
+    fi
+
+    # Também incluir usuários criados pelo manager mas que não estão em nenhum grupo
+    # (órfãos que foram removidos dos grupos via remove-user mas ainda existem no sistema)
+    local managed_users
+    managed_users=$(getent passwd 2>/dev/null | grep "managed by devs_permissions" | cut -d: -f1 | tr '\n' ',')
+    if [[ -n "$managed_users" ]]; then
+        [[ -n "$all_users" ]] && all_users="${all_users},${managed_users}" || all_users="$managed_users"
+    fi
+
+    # Deduplica
+    local unique_users
+    unique_users=$(echo "$all_users" | tr ',' '\n' | sort -u | grep -v '^$')
+
+    # Ler times da config
+    local teams_data="{}"
+    if [[ -f "$CONFIG_FILE" ]]; then
+        # Extrair times e seus membros
+        local teams
+        teams=$(sed -n '/^TEAMS=(/,/)/p' "$CONFIG_FILE" 2>/dev/null | grep '"' | sed 's/.*"\(.*\)".*/\1/')
+
+        local teams_json="{"
+        local first_team=true
+        while IFS= read -r team; do
+            [[ -z "$team" ]] && continue
+            [[ "$first_team" != true ]] && teams_json+=","
+            first_team=false
+
+            local team_users
+            team_users=$(sed -n "/^TEAM_${team}_USERS=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep '"' | sed 's/.*"\(.*\)".*/\1/' | tr '\n' ',' | sed 's/,$//')
+
+            local team_containers
+            team_containers=$(sed -n "/^TEAM_${team}_CONTAINERS=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep '"' | sed 's/.*"\(.*\)".*/\1/' | tr '\n' ',' | sed 's/,$//')
+
+            teams_json+="$(json_string "$team"):{\"users\":$(json_string "$team_users"),\"containers\":$(json_string "$team_containers")}"
+        done <<< "$teams"
+        teams_json+="}"
+        teams_data="$teams_json"
+    fi
+
+    # Construir array JSON de usuários
+    local json='{"status":"ok","users":['
+    local first=true
+
+    while IFS= read -r user; do
+        [[ -z "$user" ]] && continue
+        [[ "$first" != true ]] && json+=","
+        first=false
+
+        local is_basic=false is_exec=false is_webconf=false
+        echo ",$basic_members," | grep -q ",$user," && is_basic=true
+        echo ",$exec_members," | grep -q ",$user," && is_exec=true
+        echo ",$webconf_members," | grep -q ",$user," && is_webconf=true
+
+        # Buscar time do usuário
+        local user_teams=""
+        if [[ -f "$CONFIG_FILE" ]]; then
+            local teams
+            teams=$(sed -n '/^TEAMS=(/,/)/p' "$CONFIG_FILE" 2>/dev/null | grep '"' | sed 's/.*"\(.*\)".*/\1/')
+            while IFS= read -r team; do
+                [[ -z "$team" ]] && continue
+                if sed -n "/^TEAM_${team}_USERS=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep -q "\"$user\""; then
+                    [[ -n "$user_teams" ]] && user_teams="${user_teams},"
+                    user_teams="${user_teams}${team}"
+                fi
+            done <<< "$teams"
+        fi
+
+        # Verificar temp access (formato: .expiry contém epoch, .reason contém texto)
+        local has_temp=false temp_expires="" temp_reason=""
+        if [[ -d "$TEMP_ACCESS_DIR" ]]; then
+            local expiry_file="${TEMP_ACCESS_DIR}/${user}.expiry"
+            local reason_file="${TEMP_ACCESS_DIR}/${user}.reason"
+            if [[ -f "$expiry_file" ]]; then
+                has_temp=true
+                temp_expires=$(cat "$expiry_file" 2>/dev/null || echo "0")
+                [[ -f "$reason_file" ]] && temp_reason=$(cat "$reason_file" 2>/dev/null || echo "")
+            fi
+        fi
+
+        # Última atividade
+        local last_login=""
+        last_login=$(lastlog -u "$user" 2>/dev/null | tail -1 | awk '{if ($2 != "**Never") print $4,$5,$6,$7,$9; else print "never"}' || echo "unknown")
+
+        # Verificar se conta está bloqueada
+        local is_locked=false
+        local pw_status
+        pw_status=$(passwd -S "$user" 2>/dev/null | awk '{print $2}')
+        [[ "$pw_status" == "L" || "$pw_status" == "LK" ]] && is_locked=true
+
+        json+="{\"name\":$(json_string "$user")"
+        json+=",\"basic\":${is_basic},\"exec\":${is_exec},\"webconf\":${is_webconf}"
+        json+=",\"locked\":${is_locked}"
+        json+=",\"teams\":$(json_string "$user_teams")"
+        json+=",\"has_temp\":${has_temp}"
+        json+=",\"temp_expires\":$(json_string "$temp_expires")"
+        json+=",\"temp_reason\":$(json_string "$temp_reason")"
+        json+=",\"last_login\":$(json_string "$last_login")"
+        json+="}"
+    done <<< "$unique_users"
+
+    json+=']}'
+    echo "$json"
+}
+
+#===============================================================================
+# COMANDOS - ACESSO TEMPORÁRIO
+#===============================================================================
+
+cmd_list_temp_access() {
+    local json='{"status":"ok","entries":['
+    local first=true
+    local now
+    now=$(epoch_now)
+
+    if [[ -d "$TEMP_ACCESS_DIR" ]]; then
+        for expiry_file in "$TEMP_ACCESS_DIR"/*.expiry; do
+            [[ -f "$expiry_file" ]] || continue
+            [[ "$first" != true ]] && json+=","
+            first=false
+
+            local user expiry reason=""
+            user=$(basename "$expiry_file" .expiry)
+            expiry=$(cat "$expiry_file" 2>/dev/null || echo "0")
+            local reason_file="${TEMP_ACCESS_DIR}/${user}.reason"
+            [[ -f "$reason_file" ]] && reason=$(cat "$reason_file" 2>/dev/null || echo "")
+
+            local remaining=$(( (expiry - now) / 3600 ))
+            json+="{\"user\":$(json_string "$user"),\"expires_epoch\":$expiry,\"hours_remaining\":$remaining,\"reason\":$(json_string "$reason")}"
+        done
+    fi
+
+    json+='],"now":'"$now"'}'
+    echo "$json"
+}
+
+#===============================================================================
+# COMANDOS - SOLICITAÇÕES
+#===============================================================================
+
+cmd_list_requests() {
+    local json='{"status":"ok","requests":['
+    local first=true
+
+    if [[ -d "$REQUESTS_DIR" ]]; then
+        for f in "$REQUESTS_DIR"/*.json; do
+            [[ -f "$f" ]] || continue
+            [[ "$first" != true ]] && json+=","
+            first=false
+
+            local content
+            content=$(cat "$f" 2>/dev/null || echo "{}")
+            json+="$content"
+        done
+    fi
+
+    json+=']}'
+    echo "$json"
+}
+
+#===============================================================================
+# COMANDOS - TIMES
+#===============================================================================
+
+cmd_list_teams() {
+    local json='{"status":"ok","teams":['
+    local first=true
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local teams
+        teams=$(sed -n '/^TEAMS=(/,/)/p' "$CONFIG_FILE" 2>/dev/null | grep -v '^\s*#' | grep '"' | sed 's/.*"\(.*\)".*/\1/')
+
+        while IFS= read -r team; do
+            [[ -z "$team" ]] && continue
+            [[ "$first" != true ]] && json+=","
+            first=false
+
+            local users containers webconf_patterns
+            users=$(sed -n "/^TEAM_${team}_USERS=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep -v '^\s*#' | grep '"' | sed 's/.*"\(.*\)".*/\1/')
+            containers=$(sed -n "/^TEAM_${team}_CONTAINERS=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep -v '^\s*#' | grep '"' | sed 's/.*"\(.*\)".*/\1/')
+            webconf_patterns=$(sed -n "/^TEAM_${team}_WEBCONF_PATTERNS=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep -v '^\s*#' | grep '"' | sed 's/.*"\(.*\)".*/\1/')
+
+            # Converter para arrays JSON
+            local users_arr='['
+            local uf=true
+            while IFS= read -r u; do
+                [[ -z "$u" ]] && continue
+                [[ "$uf" != true ]] && users_arr+=","
+                uf=false
+                users_arr+="$(json_string "$u")"
+            done <<< "$users"
+            users_arr+=']'
+
+            local cont_arr='['
+            local cf=true
+            while IFS= read -r c; do
+                [[ -z "$c" ]] && continue
+                [[ "$cf" != true ]] && cont_arr+=","
+                cf=false
+                cont_arr+="$(json_string "$c")"
+            done <<< "$containers"
+            cont_arr+=']'
+
+            local wc_arr='['
+            local wf=true
+            while IFS= read -r w; do
+                [[ -z "$w" ]] && continue
+                [[ "$wf" != true ]] && wc_arr+=","
+                wf=false
+                wc_arr+="$(json_string "$w")"
+            done <<< "$webconf_patterns"
+            wc_arr+=']'
+
+            json+="{\"name\":$(json_string "$team"),\"users\":${users_arr},\"containers\":${cont_arr},\"webconf_patterns\":${wc_arr}}"
+        done <<< "$teams"
+    fi
+
+    json+=']}'
+    echo "$json"
+}
+
+#===============================================================================
+# COMANDOS - GERENCIAR TIMES (edita config diretamente)
+#===============================================================================
+
+cmd_team_add() {
+    # Adiciona um novo time ao config
+    local team_name="$1"
+    team_name=$(echo "$team_name" | sed 's/[^a-zA-Z0-9_]//g')
+    if [[ -z "$team_name" ]]; then
+        echo '{"status":"error","message":"Nome do time invalido"}'
+        return 1
+    fi
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo '{"status":"error","message":"Config file not found"}'
+        return 1
+    fi
+
+    # Verificar se o time já existe
+    if sed -n '/^TEAMS=(/,/)/p' "$CONFIG_FILE" | grep -q "\"$team_name\""; then
+        echo '{"status":"error","message":"Time ja existe: '"$team_name"'"}'
+        return 1
+    fi
+
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+
+    # Adicionar nome ao array TEAMS
+    if grep -q '^TEAMS=(' "$CONFIG_FILE"; then
+        # Inserir antes do fechamento do array
+        sed -i "/^TEAMS=(/,/)/{
+            /)/i\\    \"$team_name\"
+        }" "$CONFIG_FILE"
+    else
+        # Criar array TEAMS
+        printf '\nTEAMS=(\n    "%s"\n)\n' "$team_name" >> "$CONFIG_FILE"
+    fi
+
+    # Criar arrays vazios para o time
+    printf '\nTEAM_%s_USERS=(\n)\n' "$team_name" >> "$CONFIG_FILE"
+    printf '\nTEAM_%s_CONTAINERS=(\n)\n' "$team_name" >> "$CONFIG_FILE"
+
+    echo '{"status":"ok","message":"Time criado: '"$team_name"'"}'
+}
+
+cmd_team_remove() {
+    local team_name="$1"
+    team_name=$(echo "$team_name" | sed 's/[^a-zA-Z0-9_]//g')
+    if [[ -z "$team_name" ]]; then
+        echo '{"status":"error","message":"Nome do time invalido"}'
+        return 1
+    fi
+
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+
+    # Remover do array TEAMS
+    sed -i "/^TEAMS=(/,/)/{/\"$team_name\"/d}" "$CONFIG_FILE"
+
+    # Remover arrays do time
+    sed -i "/^TEAM_${team_name}_USERS=(/,/)/d" "$CONFIG_FILE"
+    sed -i "/^TEAM_${team_name}_CONTAINERS=(/,/)/d" "$CONFIG_FILE"
+    sed -i "/^TEAM_${team_name}_WEBCONF_PATTERNS=(/,/)/d" "$CONFIG_FILE"
+
+    echo '{"status":"ok","message":"Time removido: '"$team_name"'"}'
+}
+
+cmd_team_add_member() {
+    # Adiciona usuario ou container a um time
+    local team_name="$1" item_type="$2" item_value="$3"
+    team_name=$(echo "$team_name" | sed 's/[^a-zA-Z0-9_]//g')
+    item_value=$(echo "$item_value" | sed 's/[^a-zA-Z0-9._*/-]//g')
+
+    if [[ -z "$team_name" || -z "$item_type" || -z "$item_value" ]]; then
+        echo '{"status":"error","message":"Parametros incompletos"}'
+        return 1
+    fi
+
+    local array_name
+    case "$item_type" in
+        user)      array_name="TEAM_${team_name}_USERS" ;;
+        container) array_name="TEAM_${team_name}_CONTAINERS" ;;
+        *)
+            echo '{"status":"error","message":"Tipo invalido: '"$item_type"'"}'
+            return 1
+            ;;
+    esac
+
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+
+    # Verificar se já existe
+    if sed -n "/^${array_name}=(/,/)/p" "$CONFIG_FILE" | grep -q "\"$item_value\""; then
+        echo '{"status":"error","message":"'"$item_value"' ja existe no time '"$team_name"'"}'
+        return 1
+    fi
+
+    # Inserir no array
+    if grep -q "^${array_name}=(" "$CONFIG_FILE"; then
+        sed -i "/^${array_name}=(/,/)/{
+            /)/i\\    \"$item_value\"
+        }" "$CONFIG_FILE"
+    else
+        printf '\n%s=(\n    "%s"\n)\n' "$array_name" "$item_value" >> "$CONFIG_FILE"
+    fi
+
+    echo '{"status":"ok","message":"'"$item_value"' adicionado ao time '"$team_name"'"}'
+}
+
+cmd_team_remove_member() {
+    local team_name="$1" item_type="$2" item_value="$3"
+    team_name=$(echo "$team_name" | sed 's/[^a-zA-Z0-9_]//g')
+    item_value=$(echo "$item_value" | sed 's/[^a-zA-Z0-9._*/-]//g')
+
+    local array_name
+    case "$item_type" in
+        user)      array_name="TEAM_${team_name}_USERS" ;;
+        container) array_name="TEAM_${team_name}_CONTAINERS" ;;
+        *) echo '{"status":"error","message":"Tipo invalido"}'; return 1 ;;
+    esac
+
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+
+    sed -i "/^${array_name}=(/,/)/{/\"$item_value\"/d}" "$CONFIG_FILE"
+
+    echo '{"status":"ok","message":"'"$item_value"' removido do time '"$team_name"'"}'
+}
+
+#===============================================================================
+# COMANDOS - BACKUPS
+#===============================================================================
+
+cmd_list_backups() {
+    local json='{"status":"ok","backups":['
+    local first=true
+
+    if [[ -d "$BACKUP_DIR" ]]; then
+        while IFS= read -r entry; do
+            [[ -z "$entry" ]] && continue
+            [[ "$first" != true ]] && json+=","
+            first=false
+
+            local size
+            size=$(echo "$entry" | awk '{print $1}')
+            local path
+            path=$(echo "$entry" | awk '{print $2}')
+            local name
+            name=$(basename "$path")
+
+            json+="{\"name\":$(json_string "$name"),\"size\":$(json_string "$size"),\"path\":$(json_string "$path")}"
+        done < <(du -sh "$BACKUP_DIR"/* 2>/dev/null | sort -rh | head -20)
+    fi
+
+    json+=']}'
+    echo "$json"
+}
+
+#===============================================================================
+# COMANDOS - CONFIGURAÇÃO
+#===============================================================================
+
+cmd_get_config() {
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local content
+        content=$(cat "$CONFIG_FILE")
+        local json='{"status":"ok","path":'
+        json+="$(json_string "$CONFIG_FILE")"
+        json+=',"content":'
+        json+="$(json_string "$content")"
+        json+='}'
+        echo "$json"
+    else
+        echo '{"status":"error","message":"Config file not found","path":"'"$CONFIG_FILE"'"}'
+    fi
+}
+
+cmd_save_config() {
+    local content="$1"
+    if [[ -z "$content" ]]; then
+        echo '{"status":"error","message":"No content provided"}'
+        return 1
+    fi
+
+    # Rejeitar conteúdo com padrões perigosos de injeção shell
+    if echo "$content" | grep -qE '(\$\(|`|;\s*(rm|curl|wget|nc|bash|sh|python|perl|ruby)\b)'; then
+        echo '{"status":"error","message":"Config content contains potentially dangerous shell patterns"}'
+        return 1
+    fi
+
+    # Backup antes de salvar
+    if [[ -f "$CONFIG_FILE" ]]; then
+        local backup_file="${CONFIG_FILE}.bak.$(date +%Y%m%d_%H%M%S)"
+        cp "$CONFIG_FILE" "$backup_file" 2>/dev/null || true
+    fi
+
+    echo "$content" > "$CONFIG_FILE"
+    echo '{"status":"ok","message":"Configuration saved"}'
+}
+
+#===============================================================================
+# COMANDOS - SETTINGS (parser estruturado do config)
+#===============================================================================
+
+_cfg_val() {
+    # Extrai valor de uma variável do config. Suporta "valor" e valor sem aspas
+    local var="$1"
+    local val
+    val=$(grep -m1 "^${var}=" "$CONFIG_FILE" 2>/dev/null | sed "s/^${var}=\"\\?\\([^\"]*\\)\"\\?/\\1/")
+    echo "$val"
+}
+
+_cfg_bool() {
+    local val
+    val=$(_cfg_val "$1")
+    [[ "$val" == "true" ]] && echo "true" || echo "false"
+}
+
+_cfg_array_inline() {
+    # Retorna array como JSON: ["val1","val2"]
+    local var="$1"
+    local line
+    line=$(sed -n "/^${var}=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | tr '\n' ' ')
+    if [[ -z "$line" ]]; then
+        echo "[]"
+        return
+    fi
+    local json="["
+    local first=true
+    while IFS= read -r item; do
+        item=$(echo "$item" | sed 's/^[[:space:]]*"//;s/"[[:space:]]*$//')
+        [[ -z "$item" || "$item" == "(" || "$item" == ")" ]] && continue
+        [[ "$first" != true ]] && json+=","
+        first=false
+        json+=$(json_string "$item")
+    done < <(sed -n "/^${var}=(/,/)/p" "$CONFIG_FILE" 2>/dev/null | grep -v '^\s*#' | grep '"' | sed 's/.*"\([^"]*\)".*/\1/')
+    json+="]"
+    echo "$json"
+}
+
+cmd_get_settings() {
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo '{"status":"error","message":"Config file not found"}'
+        return 1
+    fi
+
+    cat <<SETTINGS_EOF
+{
+    "status": "ok",
+    "ambiente": {
+        "ENVIRONMENT": $(json_string "$(_cfg_val ENVIRONMENT)"),
+        "AUTO_CREATE_USERS": $(_cfg_bool AUTO_CREATE_USERS),
+        "AUTO_CREATE_GROUPS": $(_cfg_bool AUTO_CREATE_GROUPS),
+        "DEFAULT_SHELL": $(json_string "$(_cfg_val DEFAULT_SHELL)")
+    },
+    "horario": {
+        "ACCESS_HOURS_ENABLED": $(_cfg_bool ACCESS_HOURS_ENABLED),
+        "ACCESS_HOURS_START": $(json_string "$(_cfg_val ACCESS_HOURS_START)"),
+        "ACCESS_HOURS_END": $(json_string "$(_cfg_val ACCESS_HOURS_END)"),
+        "ACCESS_HOURS_WEEKDAYS_ONLY": $(_cfg_bool ACCESS_HOURS_WEEKDAYS_ONLY)
+    },
+    "controle_ambiente": {
+        "PROD_REQUIRES_APPROVAL": $(_cfg_bool PROD_REQUIRES_APPROVAL),
+        "PROD_MAX_TEMP_HOURS": $(json_string "$(_cfg_val PROD_MAX_TEMP_HOURS)"),
+        "STAGING_MAX_TEMP_HOURS": $(json_string "$(_cfg_val STAGING_MAX_TEMP_HOURS)"),
+        "DEV_MAX_TEMP_HOURS": $(json_string "$(_cfg_val DEV_MAX_TEMP_HOURS)"),
+        "MAX_TEMP_HOURS": $(json_string "$(_cfg_val MAX_TEMP_HOURS)")
+    },
+    "inatividade": {
+        "INACTIVITY_DAYS": $(json_string "$(_cfg_val INACTIVITY_DAYS)"),
+        "AUTO_REVOKE_INACTIVE": $(_cfg_bool AUTO_REVOKE_INACTIVE),
+        "MAX_CONCURRENT_SESSIONS": $(json_string "$(_cfg_val MAX_CONCURRENT_SESSIONS)")
+    },
+    "notificacoes": {
+        "WEBHOOK_URL": $(json_string "$(_cfg_val WEBHOOK_URL)"),
+        "WEBHOOK_TYPE": $(json_string "$(_cfg_val WEBHOOK_TYPE)"),
+        "NOTIFY_ON_EXEC": $(_cfg_bool NOTIFY_ON_EXEC),
+        "NOTIFY_ON_TEMP_ACCESS": $(_cfg_bool NOTIFY_ON_TEMP_ACCESS),
+        "NOTIFY_ON_REQUEST": $(_cfg_bool NOTIFY_ON_REQUEST),
+        "NOTIFY_ON_SUSPICIOUS": $(_cfg_bool NOTIFY_ON_SUSPICIOUS),
+        "REPORT_EMAIL": $(json_string "$(_cfg_val REPORT_EMAIL)")
+    },
+    "grupos": {
+        "GRUPO_DEV": $(json_string "$(_cfg_val GRUPO_DEV)"),
+        "GRUPO_DEV_EXEC": $(json_string "$(_cfg_val GRUPO_DEV_EXEC)"),
+        "GRUPO_DEV_WEBCONF": $(json_string "$(_cfg_val GRUPO_DEV_WEBCONF)")
+    },
+    "docker": {
+        "DOCKER_EXEC_COMMANDS_ALLOWED": $(_cfg_array_inline DOCKER_EXEC_COMMANDS_ALLOWED),
+        "DOCKER_LOGS_PATTERNS": $(_cfg_array_inline DOCKER_LOGS_PATTERNS),
+        "DOCKER_CONTAINER_PATTERNS": $(_cfg_array_inline DOCKER_CONTAINER_PATTERNS),
+        "BLOCKED_COMMANDS": $(_cfg_array_inline BLOCKED_COMMANDS),
+        "PROTECTED_USERS": $(_cfg_array_inline PROTECTED_USERS)
+    },
+    "diretorios": {
+        "LOG_DIRS_ALLOWED": $(_cfg_array_inline LOG_DIRS_ALLOWED),
+        "WEBCONF_DIRS_ALLOWED": $(_cfg_array_inline WEBCONF_DIRS_ALLOWED),
+        "WEBCONF_SERVICES_ALLOWED": $(_cfg_array_inline WEBCONF_SERVICES_ALLOWED)
+    },
+    "caminhos": {
+        "SUDO_FILE": $(json_string "$(_cfg_val SUDO_FILE)"),
+        "BACKUP_DIR": $(json_string "$(_cfg_val BACKUP_DIR)"),
+        "LOG_FILE": $(json_string "$(_cfg_val LOG_FILE)"),
+        "AUDIT_LOG_DIR": $(json_string "$(_cfg_val AUDIT_LOG_DIR)"),
+        "SESSION_LOG_DIR": $(json_string "$(_cfg_val SESSION_LOG_DIR)"),
+        "TEMP_ACCESS_DIR": $(json_string "$(_cfg_val TEMP_ACCESS_DIR)"),
+        "REQUESTS_DIR": $(json_string "$(_cfg_val REQUESTS_DIR)"),
+        "DOCKER_WRAPPER_PATH": $(json_string "$(_cfg_val DOCKER_WRAPPER_PATH)"),
+        "CRON_FILE": $(json_string "$(_cfg_val CRON_FILE)")
+    }
+}
+SETTINGS_EOF
+}
+
+cmd_save_settings() {
+    # Recebe JSON com chave=valor e atualiza o config file
+    # Formato: key1=value1\nkey2=value2
+    local updates="$1"
+    if [[ -z "$updates" ]]; then
+        echo '{"status":"error","message":"No settings provided"}'
+        return 1
+    fi
+
+    if [[ ! -f "$CONFIG_FILE" ]]; then
+        echo '{"status":"error","message":"Config file not found"}'
+        return 1
+    fi
+
+    # Backup antes de alterar
+    cp "$CONFIG_FILE" "${CONFIG_FILE}.bak" 2>/dev/null
+
+    # Whitelist de chaves que podem ser alteradas via settings UI
+    local -r ALLOWED_SETTINGS=(
+        "ENVIRONMENT" "DEFAULT_SHELL" "AUTO_CREATE_USERS" "AUTO_CREATE_GROUPS"
+        "GRUPO_DEV" "GRUPO_DEV_EXEC" "GRUPO_DEV_WEBCONF"
+        "ACCESS_HOURS_ENABLED" "ACCESS_HOURS_START" "ACCESS_HOURS_END" "ACCESS_HOURS_WEEKDAYS_ONLY"
+        "PROD_REQUIRES_APPROVAL" "PROD_MAX_TEMP_HOURS" "STAGING_MAX_TEMP_HOURS" "DEV_MAX_TEMP_HOURS" "MAX_TEMP_HOURS"
+        "INACTIVITY_DAYS" "AUTO_REVOKE_INACTIVE" "MAX_CONCURRENT_SESSIONS"
+        "WEBHOOK_URL" "WEBHOOK_TYPE" "REPORT_EMAIL"
+        "NOTIFY_ON_EXEC" "NOTIFY_ON_TEMP_ACCESS" "NOTIFY_ON_REQUEST" "NOTIFY_ON_SUSPICIOUS"
+    )
+
+    local count=0
+    while IFS='=' read -r key value; do
+        [[ -z "$key" ]] && continue
+        key=$(echo "$key" | sed 's/[^A-Za-z0-9_]//g')
+        [[ -z "$key" ]] && continue
+
+        # Verificar se a chave está na whitelist
+        local key_allowed=false
+        for allowed in "${ALLOWED_SETTINGS[@]}"; do
+            if [[ "$key" == "$allowed" ]]; then
+                key_allowed=true
+                break
+            fi
+        done
+        [[ "$key_allowed" == false ]] && continue
+
+        if grep -q "^${key}=" "$CONFIG_FILE"; then
+            # Boolean values: no quotes, valor fixo
+            if [[ "$value" == "true" || "$value" == "false" ]]; then
+                sed -i "s|^${key}=.*|${key}=${value}|" "$CONFIG_FILE"
+            else
+                # Sanitiza valor antes de escrever
+                value=$(sanitize_config_value "$value")
+                sed -i "s|^${key}=.*|${key}=\"${value}\"|" "$CONFIG_FILE"
+            fi
+            ((count++))
+        fi
+    done <<< "$updates"
+
+    echo "{\"status\":\"ok\",\"message\":\"$count settings updated\"}"
+}
+
+#===============================================================================
+# COMANDOS - EXECUTAR MANAGER (proxy seguro)
+#===============================================================================
+
+cmd_run_manager() {
+    # Executa o manager com os argumentos recebidos e captura output
+    if [[ ! -x "$MANAGER_SCRIPT" ]]; then
+        echo '{"status":"error","message":"Manager script not found or not executable"}'
+        return 1
+    fi
+
+    # Whitelist de subcomandos permitidos via Cockpit
+    local -r ALLOWED_COMMANDS=(
+        "add-user" "remove-user" "delete-user" "disable-user" "enable-user"
+        "promote" "demote" "reset-user"
+        "grant-temp" "revoke-temp"
+        "approve" "deny"
+        "apply" "sync" "cleanup" "backup" "restore-backup"
+        "audit-report" "session-report" "health-check" "inactive-users"
+    )
+
+    # Whitelist de flags permitidas
+    local -r ALLOWED_FLAGS=(
+        "--user" "-u" "--reason" "--hours" "-H"
+        "--request-id" "--days" "--format" "--exec" "--webconf"
+        "--dry-run" "--verbose"
+    )
+
+    # Valida subcomando (primeiro argumento)
+    local subcmd="${1:-}"
+    shift || true
+    local cmd_allowed=false
+    for allowed in "${ALLOWED_COMMANDS[@]}"; do
+        if [[ "$subcmd" == "$allowed" ]]; then
+            cmd_allowed=true
+            break
+        fi
+    done
+    if [[ "$cmd_allowed" == false ]]; then
+        echo '{"status":"error","message":"Command not allowed: '"$(json_escape "$subcmd")"'"}'
+        return 1
+    fi
+
+    # Sanitiza argumentos: usernames e valores que vão para o manager
+    local sanitized_args=("$subcmd" "--force" "--config" "$CONFIG_FILE")
+    local expect_user=false expect_reason=false expect_hours=false expect_value=false
+    for arg in "$@"; do
+        if [[ "$expect_user" == true ]]; then
+            sanitized_args+=("$(sanitize_input "$arg")")
+            expect_user=false
+        elif [[ "$expect_reason" == true ]]; then
+            sanitized_args+=("$(sanitize_reason "$arg")")
+            expect_reason=false
+        elif [[ "$expect_hours" == true ]]; then
+            # Só aceita números
+            if [[ "$arg" =~ ^[0-9]+$ ]]; then
+                sanitized_args+=("$arg")
+            else
+                echo '{"status":"error","message":"Invalid hours value"}'
+                return 1
+            fi
+            expect_hours=false
+        elif [[ "$expect_value" == true ]]; then
+            sanitized_args+=("$(sanitize_input "$arg")")
+            expect_value=false
+        else
+            case "$arg" in
+                --user|-u)       sanitized_args+=("$arg"); expect_user=true ;;
+                --reason)        sanitized_args+=("$arg"); expect_reason=true ;;
+                --hours|-H)      sanitized_args+=("$arg"); expect_hours=true ;;
+                --request-id|--days|--format|--backup) sanitized_args+=("$arg"); expect_value=true ;;
+                --exec|--webconf|--dry-run|--verbose) sanitized_args+=("$arg") ;;
+                -*)
+                    # Flag desconhecida: rejeitar
+                    echo '{"status":"error","message":"Flag not allowed: '"$(json_escape "$arg")"'"}'
+                    return 1
+                    ;;
+                *)          sanitized_args+=("$(sanitize_input "$arg")") ;;
+            esac
+        fi
+    done
+
+    local args=("${sanitized_args[@]}")
+
+    local output exit_code
+    output=$("$MANAGER_SCRIPT" "${args[@]}" 2>&1) && exit_code=$? || exit_code=$?
+
+    # Strip ANSI color codes
+    output=$(echo "$output" | sed 's/\x1b\[[0-9;]*m//g')
+
+    cat <<EOF
+{"status":"$([ $exit_code -eq 0 ] && echo "ok" || echo "error")","exit_code":$exit_code,"output":$(json_string "$output")}
+EOF
+}
+
+#===============================================================================
+# COMANDOS - VERIFICAÇÃO DE INSTALAÇÃO
+#===============================================================================
+
+cmd_check_install() {
+    local manager_ok=false config_ok=false
+    local manager_version=""
+
+    [[ -x "$MANAGER_SCRIPT" ]] && manager_ok=true
+    [[ -f "$CONFIG_FILE" ]] && config_ok=true
+
+    if [[ "$manager_ok" == true ]]; then
+        manager_version=$("$MANAGER_SCRIPT" --version 2>/dev/null | head -1 || echo "unknown")
+    fi
+
+    cat <<EOF
+{
+    "status": "ok",
+    "helper_version": "$HELPER_VERSION",
+    "manager_installed": $manager_ok,
+    "manager_version": $(json_string "$manager_version"),
+    "config_exists": $config_ok,
+    "config_path": $(json_string "$CONFIG_FILE"),
+    "manager_path": $(json_string "$MANAGER_SCRIPT")
+}
+EOF
+}
+
+#===============================================================================
+# DISPATCHER
+#===============================================================================
+
+main() {
+    local command="${1:-}"
+    shift || true
+
+    case "$command" in
+        get-overview)      cmd_get_overview ;;
+        list-users)        cmd_list_users ;;
+        list-teams)        cmd_list_teams ;;
+        list-temp-access)  cmd_list_temp_access ;;
+        list-requests)     cmd_list_requests ;;
+        list-backups)      cmd_list_backups ;;
+        get-config)        cmd_get_config ;;
+        save-config)       cmd_save_config "$*" ;;
+        get-settings)      cmd_get_settings ;;
+        save-settings)     cmd_save_settings "$*" ;;
+        team-add)          cmd_team_add "$@" ;;
+        team-remove)       cmd_team_remove "$@" ;;
+        team-add-member)   cmd_team_add_member "$@" ;;
+        team-remove-member) cmd_team_remove_member "$@" ;;
+        check-install)     cmd_check_install ;;
+
+        # Proxy para o manager (todas as ações de escrita)
+        run)               cmd_run_manager "$@" ;;
+
+        *)
+            echo '{"status":"error","message":"Unknown command: '"$(json_escape "$command")"'"}'
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"

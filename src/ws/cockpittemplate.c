@@ -19,61 +19,52 @@
 
 #include <string.h>
 
-#define VARCHARS "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-"
+#define IS_WORDCHAR(c) (g_ascii_isalnum (c) || (c) == '_')
 
 static gchar *
-find_variable (const gchar *start_marker,
-               const gchar *end_marker,
-               const gchar *data,
+find_variable (const gchar *data,
                const gchar *end,
                const gchar **before,
                const gchar **after)
 {
-  const gchar *a;
-  const gchar *b;
-  const gchar *c;
-  const gchar *d;
+  const gchar *a, *b, *c;
 
-  for (;;)
+  g_return_val_if_fail (before != NULL, NULL);
+  g_return_val_if_fail (after != NULL, NULL);
+  g_return_val_if_fail (data <= end, NULL);
+
+  while ((a = memmem (data, end - data, "${", 2)))
     {
-      /* Look for start_marker to end_marker */
-      a = memmem (data, strlen(data), start_marker, strlen (start_marker));
-      if (a == NULL)
-        return NULL;
-
-      data = a + strlen (start_marker);
-      b = data;
-
-      c = memmem (data, strlen(data), end_marker, strlen (end_marker));
-      if (c == NULL)
-        return NULL;
-
-      data = c + strlen (end_marker);
-      d = data;
-
       /*
-       * We've found a variable like this:
+       * Found "${". Scan for a valid variable name:
        *
-       * Some text @@variable.part@@ trailing.
-       *           a b            c d
+       *   Some text ${variable_name} trailing.
+       *             a b            c
        *
-       * Check that the name makes sense.
+       * a = "${"
+       * b = first char of variable name
+       * c = should be '}'
        */
-      if (b != c && b + strspn (b, VARCHARS) == c)
-        break;
+      b = a + 2;
+
+      for (c = b; c < end && IS_WORDCHAR (*c); c++)
+        ;
+
+      if (b < c && c < end && *c == '}')
+        {
+          *before = a;
+          *after = c + 1;
+          return g_strndup (b, c - b);
+        }
+
+      data = c;
     }
 
-  if (before)
-    *before = a;
-  if (after)
-    *after = d;
-  return g_strndup (b, c - b);
+  return NULL;
 }
 
 GList *
 cockpit_template_expand (GBytes *input,
-                         const gchar *start_marker,
-                         const gchar *end_marker,
                          CockpitTemplateFunc func,
                          gpointer user_data)
 {
@@ -95,7 +86,7 @@ cockpit_template_expand (GBytes *input,
   for (;;)
     {
       escaped = FALSE;
-      name = find_variable (start_marker, end_marker, data, end, &before, &after);
+      name = find_variable (data, end, &before, &after);
       if (name == NULL)
         break;
 

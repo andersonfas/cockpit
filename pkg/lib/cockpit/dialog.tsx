@@ -9,7 +9,6 @@
 /* TODOs:
 
    - progress reporting
-   - action cancelling
    - array splicing via value handles
    - different validation rules for different actions
  */
@@ -302,6 +301,16 @@
 
      if (dlg.run_action(...))
        dlg.field("xxx").set(...)
+
+   - dlg.set_cancel(func)
+
+   Arranges for "func" to be called when the cancel button is clicked.
+   You should call this only from a action function passed to
+   "run_action" and you need to take care to reset this via
+   "dlg.set_cancel(null)" once the cancel function should no longer be
+   called.  When a action funtion finishes or throws an error from
+   within "dlg.run_action", the cancel function is automatically
+   reset.
 
    Let's now finally talk about input validation.
 
@@ -614,6 +623,8 @@ import {
     FormSelect, FormSelectOption, type FormSelectProps,
 } from "@patternfly/react-core/dist/esm/components/FormSelect";
 import { Radio } from "@patternfly/react-core/dist/esm/components/Radio";
+import { InputGroup, InputGroupItem } from "@patternfly/react-core/dist/esm/components/InputGroup/index.js";
+import { EyeIcon, EyeSlashIcon } from "@patternfly/react-icons";
 
 const _ = cockpit.gettext;
 
@@ -757,6 +768,7 @@ export class DialogState<V> extends EventEmitter<DialogStateEvents> {
     busy: boolean = false;
     actions_disabled: boolean = false;
     cancel_disabled: boolean = false;
+    cancel_function: (() => void) | null = null;
 
     error: unknown = null;
 
@@ -779,7 +791,7 @@ export class DialogState<V> extends EventEmitter<DialogStateEvents> {
     #update() {
         this.busy = this.#action_running;
         this.actions_disabled = this.#action_running || this.#validation_failed;
-        this.cancel_disabled = this.#action_running;
+        this.cancel_disabled = this.#action_running && !this.cancel_function;
         this.emit("changed");
     }
 
@@ -1128,8 +1140,14 @@ export class DialogState<V> extends EventEmitter<DialogStateEvents> {
         }
     }
 
+    set_cancel(cancel: (() => void) | null) {
+        this.cancel_function = cancel;
+        this.#update();
+    }
+
     async run_action(func: (vals: V) => Promise<void>): Promise<boolean> {
         this.error = null;
+        this.cancel_function = null;
         this.#action_running = true;
         this.#update();
         if (!await this.validate()) {
@@ -1145,6 +1163,7 @@ export class DialogState<V> extends EventEmitter<DialogStateEvents> {
             this.error = ex;
         }
 
+        this.cancel_function = null;
         this.#action_running = false;
         this.#update();
 
@@ -1187,7 +1206,7 @@ export class DialogError {
     title: string;
     details: React.ReactNode;
 
-    constructor(title: string, details: React.ReactNode) {
+    constructor(title: string, details?: React.ReactNode) {
         this.title = title;
         this.details = details;
     }
@@ -1320,7 +1339,12 @@ export function DialogCancelButton<V>({
             id="dialog-cancel"
             isDisabled={!dialog || (dialog instanceof DialogState && dialog.cancel_disabled)}
             variant="link"
-            onClick={onClose}
+            onClick={() => {
+                if (dialog instanceof DialogState && dialog.cancel_function)
+                    dialog.cancel_function();
+                else
+                    onClose();
+            }}
             {...props}
         >
             {_("Cancel")}
@@ -1420,6 +1444,52 @@ export const DialogTextInput = ({
                 isDisabled={!!excuse || isDisabled}
                 {...props}
             />
+            <DialogHelperText explanation={explanation} warning={warning} excuse={excuse} field={field} />
+        </OptionalFormGroup>
+    );
+};
+
+export const DialogPasswordInput = ({
+    label = null,
+    field,
+    excuse,
+    warning,
+    explanation,
+    isDisabled = false,
+    ...props
+} : {
+    label?: React.ReactNode,
+    field: DialogField<string>,
+    excuse?: string | falsy,
+    warning?: React.ReactNode,
+    explanation?: React.ReactNode,
+    isDisabled?: boolean,
+} & Omit<TextInputProps, "id" | "label" | "value" | "onChange">) => {
+    const [visible, setVisible] = useState(false);
+
+    return (
+        <OptionalFormGroup label={label} fieldId={field.id()}>
+            <InputGroup>
+                <InputGroupItem isFill>
+                    <TextInput
+                        id={field.id()}
+                        type={visible ? "text" : "password"}
+                        value={field.get()}
+                        onChange={(_event, value) => field.set(value)}
+                        isDisabled={!!excuse || isDisabled}
+                        {...props}
+                    />
+                </InputGroupItem>
+                <InputGroupItem>
+                    <Button
+                        variant="control"
+                        aria-label={visible ? _("Hide password") : _("Show password")}
+                        onClick={() => setVisible(!visible)}
+                    >
+                        {visible ? <EyeSlashIcon /> : <EyeIcon />}
+                    </Button>
+                </InputGroupItem>
+            </InputGroup>
             <DialogHelperText explanation={explanation} warning={warning} excuse={excuse} field={field} />
         </OptionalFormGroup>
     );
