@@ -33,6 +33,12 @@ set -euo pipefail
 readonly SCRIPT_VERSION="1.0.0"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd 2>/dev/null || pwd)"
 
+# Detecta se esta sendo executado via pipe (curl | bash)
+PIPED_EXECUTION=false
+if [[ ! -t 0 ]] || [[ "${BASH_SOURCE[0]:-}" == "" ]]; then
+    PIPED_EXECUTION=true
+fi
+
 # GitHub repo para clone remoto
 readonly GITHUB_REPO="https://github.com/andersonfas/cockpit.git"
 
@@ -130,6 +136,14 @@ detect_distro() {
 #===============================================================================
 
 detect_source() {
+    # Quando executado via pipe (curl | bash), sempre clona do GitHub
+    # para garantir que a versao mais recente seja usada
+    if [[ "$PIPED_EXECUTION" == "true" ]]; then
+        info "Execucao via pipe detectada - sera clonado do GitHub"
+        REPO_DIR=""
+        return 0
+    fi
+
     # Verifica se o script esta sendo executado dentro do repositorio
     if [[ -f "${SCRIPT_DIR}/devs-permissions-cockpit/src/manifest.json" && \
           -f "${SCRIPT_DIR}/devs_permissions_manager.sh" ]]; then
