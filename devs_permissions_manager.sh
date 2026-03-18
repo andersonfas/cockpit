@@ -56,13 +56,13 @@ readonly SCRIPT_DIR="$(cd "$(dirname "$_SCRIPT_SOURCE")" && pwd)"
 readonly SCRIPT_PID=$$
 readonly LOCK_FILE="/var/run/devs_permissions.lock"
 
-# Configuração padrão - tenta SCRIPT_DIR primeiro, depois /etc/devs-permissions/
-if [[ -f "${SCRIPT_DIR}/devs_permissions.conf" ]]; then
-    CONFIG_FILE="${SCRIPT_DIR}/devs_permissions.conf"
-elif [[ -f "/etc/devs-permissions/devs_permissions.conf" ]]; then
+# Configuração padrão - prioridade: /etc/ (FHS), depois SCRIPT_DIR (dev local)
+if [[ -f "/etc/devs-permissions/devs_permissions.conf" ]]; then
     CONFIG_FILE="/etc/devs-permissions/devs_permissions.conf"
-else
+elif [[ -f "${SCRIPT_DIR}/devs_permissions.conf" ]]; then
     CONFIG_FILE="${SCRIPT_DIR}/devs_permissions.conf"
+else
+    CONFIG_FILE="/etc/devs-permissions/devs_permissions.conf"
 fi
 
 #===============================================================================
