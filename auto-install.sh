@@ -31,7 +31,7 @@
 set -euo pipefail
 
 readonly SCRIPT_VERSION="1.0.0"
-readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd 2>/dev/null || pwd)"
 
 # GitHub repo para clone remoto
 readonly GITHUB_REPO="https://github.com/andersonfas/cockpit.git"
