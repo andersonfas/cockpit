@@ -98,6 +98,9 @@ ensure_config() {
 # Gerado automaticamente pelo instalador
 #===============================================================================
 
+# Nome da organizacao (exibido no dashboard e logs)
+ORG_NAME="DevOps Team"
+
 # Ambiente: development, staging, production
 ENVIRONMENT="production"
 

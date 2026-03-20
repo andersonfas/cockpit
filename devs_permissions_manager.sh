@@ -11,7 +11,7 @@
 #      ATUALIZADO: 2026-03-18
 #         AMBIENTE: RHEL/CentOS/Rocky Linux 8+, Ubuntu 20.04+
 #
-#           EQUIPE: DevOps - DETRAN-CE
+#           EQUIPE: DevOps
 #       LOCALIZAÇÃO: /root/bin/devs_permissions_manager.sh
 #
 #   FUNCIONALIDADES:
@@ -86,6 +86,9 @@ TEMP_ACCESS_DIR="/var/lib/devs_permissions/temp_access"
 REQUESTS_DIR="/var/lib/devs_permissions/requests"
 CRON_FILE="/etc/cron.d/devs_permissions_jobs"
 DASHBOARD_DIR="/var/www/html/devs-dashboard"
+
+# Identificação da organização (exibido no dashboard e logs)
+ORG_NAME="DevOps Team"
 
 # Notificações
 WEBHOOK_URL=""
@@ -689,6 +692,7 @@ load_config() {
     GRUPO_DEV_EXEC="${GRUPO_DEV_EXEC:-devs_exec}"
     GRUPO_DEV_WEBCONF="${GRUPO_DEV_WEBCONF:-devs_webconf}"
     ENVIRONMENT="${ENVIRONMENT:-production}"
+    ORG_NAME="${ORG_NAME:-DevOps Team}"
     TEAM_RESTRICTION_ENABLED="${TEAM_RESTRICTION_ENABLED:-false}"
     
     # Garante que arrays existem
@@ -1147,7 +1151,7 @@ dlf() {
 
 # Mensagem de boas-vindas
 echo "╔══════════════════════════════════════════════════════════════════╗"
-echo "║  DETRAN-CE - Ambiente de Desenvolvimento                         ║"
+echo "║  ${ORG_NAME} - Ambiente de Desenvolvimento                        ║"
 echo "║  Use 'dps' para listar containers, 'dlogs <container>' para logs ║"
 echo "╚══════════════════════════════════════════════════════════════════╝"
 # === END DEVS ===
@@ -1199,7 +1203,7 @@ generate_sudoers_content() {
 # ═══════════════════════════════════════════════════════════════════════════════
 # Permissões sudo para desenvolvedores
 # Gerado por: DevOps Permissions Manager v${SCRIPT_VERSION}
-# Equipe: DevOps - DETRAN-CE
+# Equipe: ${ORG_NAME}
 # Data: $(_ts)
 # Ambiente: ${ENVIRONMENT}
 # Restrição por time: ${TEAM_RESTRICTION_ENABLED}
@@ -4114,8 +4118,8 @@ cmd_deny() {
 show_help() {
     cat << 'EOF'
 ╔══════════════════════════════════════════════════════════════════════════════╗
-║        DEVS PERMISSIONS MANAGER v5.0.0 - Production Ready Edition            ║
-║                        Equipe DevOps - DETRAN-CE                             ║
+║        DEVS PERMISSIONS MANAGER - Production Ready Edition                   ║
+║                        DevOps Permissions Manager                            ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 
 USO: devs_permissions_manager.sh [OPÇÕES] [COMANDO]
@@ -4214,15 +4218,15 @@ RESTRIÇÃO POR TIME:
     no arquivo de configuração.
 
     Exemplo:
-        daniel.oliveira no time ADMINISTRATIVO só acessa administrativo-*
-        sidriao.neto no time VEICULO só acessa veiculo-*
+        user.one no time BACKEND só acessa backend-*
+        user.two no time FRONTEND só acessa frontend-*
 
 EOF
 }
 
 show_version() {
     echo "$SCRIPT_NAME v$SCRIPT_VERSION"
-    echo "DevOps - DETRAN-CE"
+    echo "$ORG_NAME"
     echo "Ambiente: $ENVIRONMENT"
 }
 
@@ -4572,7 +4576,7 @@ generate_dashboard_html() {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="refresh" content="60">
-    <title>DevOps Permissions Dashboard - DETRAN-CE</title>
+    <title>DevOps Permissions Dashboard - $ORG_NAME</title>
     <style>
         :root{--primary:#2563eb;--primary-dark:#1d4ed8;--success:#10b981;--warning:#f59e0b;--danger:#ef4444;--bg-dark:#0f172a;--bg-card:#1e293b;--bg-card-hover:#334155;--text-primary:#f1f5f9;--text-secondary:#94a3b8;--border:#334155}*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg-dark);color:var(--text-primary);min-height:100vh}.header{background:linear-gradient(135deg,var(--primary) 0%,var(--primary-dark) 100%);padding:20px 30px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 20px rgba(0,0,0,0.3)}.header h1{font-size:1.5rem;font-weight:600}.env-badge{background:rgba(255,255,255,0.2);padding:5px 15px;border-radius:20px;font-size:0.85rem}.env-badge.production{background:var(--danger)}.env-badge.staging{background:var(--warning)}.env-badge.development{background:var(--success)}.container{max-width:1400px;margin:0 auto;padding:30px}.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px;margin-bottom:30px}.stat-card{background:var(--bg-card);border-radius:12px;padding:20px;border:1px solid var(--border)}.stat-card .icon{width:50px;height:50px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.5rem;margin-bottom:15px}.stat-card .icon.blue{background:rgba(37,99,235,0.2)}.stat-card .icon.green{background:rgba(16,185,129,0.2)}.stat-card .icon.yellow{background:rgba(245,158,11,0.2)}.stat-card .icon.red{background:rgba(239,68,68,0.2)}.stat-card .icon.purple{background:rgba(139,92,246,0.2)}.stat-card .value{font-size:2rem;font-weight:700;margin-bottom:5px}.stat-card .label{color:var(--text-secondary);font-size:0.9rem}.main-grid{display:grid;grid-template-columns:2fr 1fr;gap:30px}@media(max-width:1024px){.main-grid{grid-template-columns:1fr}}.card{background:var(--bg-card);border-radius:12px;border:1px solid var(--border);overflow:hidden;margin-bottom:20px}.card-header{padding:20px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center}.card-header h2{font-size:1.1rem;font-weight:600}.card-body{padding:20px}.table{width:100%;border-collapse:collapse}.table th,.table td{padding:12px 15px;text-align:left;border-bottom:1px solid var(--border)}.table th{background:rgba(0,0,0,0.2);font-weight:600;font-size:0.85rem;text-transform:uppercase;color:var(--text-secondary)}.table tr:hover{background:var(--bg-card-hover)}.badge{display:inline-flex;padding:4px 10px;border-radius:20px;font-size:0.75rem;font-weight:600}.badge-success{background:rgba(16,185,129,0.2);color:var(--success)}.badge-warning{background:rgba(245,158,11,0.2);color:var(--warning)}.check{color:var(--success)}.cross{color:var(--danger)}.team-badge{background:linear-gradient(135deg,#6366f1 0%,#8b5cf6 100%);color:white;padding:3px 10px;border-radius:4px;font-size:0.75rem}.teams-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:15px}.team-card{background:rgba(0,0,0,0.2);border-radius:8px;padding:15px;border-left:4px solid var(--primary)}.team-name{font-weight:600;margin-bottom:8px}.team-containers{font-family:monospace;font-size:0.85rem;color:var(--text-secondary);margin-bottom:10px}.team-users{display:flex;flex-wrap:wrap;gap:5px}.team-user-badge{background:rgba(255,255,255,0.1);padding:3px 8px;border-radius:4px;font-size:0.8rem}.temp-access-item{display:flex;justify-content:space-between;align-items:center;padding:12px 15px;background:rgba(0,0,0,0.2);border-radius:8px;margin-bottom:10px}.request-card{background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:8px;padding:15px;margin-bottom:10px}.footer{text-align:center;padding:30px;color:var(--text-secondary);font-size:0.85rem}.empty-state{text-align:center;padding:40px;color:var(--text-secondary)}.empty-state-icon{font-size:3rem;margin-bottom:15px;opacity:0.5}
     </style>
@@ -4624,7 +4628,7 @@ generate_dashboard_html() {
         </div>
     </div>
     
-    <footer class="footer">DevOps Permissions Manager v$SCRIPT_VERSION | DETRAN-CE | Gerado: $(_ts)</footer>
+    <footer class="footer">DevOps Permissions Manager v$SCRIPT_VERSION | $ORG_NAME | Gerado: $(_ts)</footer>
     
     <script>
         const data = {

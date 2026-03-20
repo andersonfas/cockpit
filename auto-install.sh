@@ -55,6 +55,9 @@ readonly CLI_SYMLINK="/usr/bin/devs-permissions"
 CLONED_DIR=""
 REPO_DIR=""
 
+# URL ou path de config externo (ex: GitLab interno)
+EXTERNAL_CONFIG=""
+
 #===============================================================================
 # CORES E UTILIDADES
 #===============================================================================
@@ -72,8 +75,12 @@ header()  { echo -e "\n${B}${BOLD}=== $* ===${N}"; }
 success() { echo -e "${G}${BOLD}[OK]${N} $*"; }
 
 cleanup_on_exit() {
+    local exit_code=$?
     if [[ -n "$CLONED_DIR" && -d "$CLONED_DIR" ]]; then
-        rm -rf "$CLONED_DIR"
+        rm -rf "$CLONED_DIR" 2>/dev/null
+    fi
+    if [[ $exit_code -ne 0 ]]; then
+        echo -e "\n${R}Instalacao interrompida (exit code: $exit_code)${N}" >&2
     fi
 }
 
@@ -234,7 +241,7 @@ install_dependencies() {
 
     if [[ "$DISTRO_FAMILY" == "rhel" ]]; then
         info "Instalando pacotes via dnf..."
-        dnf install -y \
+        if ! dnf install -y \
             cockpit \
             cockpit-system \
             cockpit-bridge \
@@ -242,19 +249,23 @@ install_dependencies() {
             curl \
             coreutils \
             bash \
-            2>&1 | grep -E "^(Instalado|Installed|Complete|Nada|Nothing)" || true
+            2>&1 | grep -E "^(Instalado|Installed|Complete|Nada|Nothing)"; then
+            warn "Alguns pacotes podem nao ter sido instalados - verificando..."
+        fi
     else
         info "Atualizando lista de pacotes..."
         apt-get update -qq 2>&1 | tail -1
 
         info "Instalando pacotes via apt..."
-        apt-get install -y -qq \
+        if ! apt-get install -y -qq \
             cockpit \
             git \
             curl \
             coreutils \
             bash \
-            2>&1 | tail -3 || true
+            2>&1 | tail -3; then
+            warn "Alguns pacotes podem nao ter sido instalados - verificando..."
+        fi
     fi
 
     # Verificar se cockpit foi instalado
@@ -372,6 +383,39 @@ install_config() {
 
     if [[ -f "$config_dest" ]]; then
         info "Configuracao existente encontrada em ${config_dest} - mantendo."
+    elif [[ -n "$EXTERNAL_CONFIG" ]]; then
+        # Config externo via --config (URL ou path local)
+        info "Baixando configuracao de: ${EXTERNAL_CONFIG}"
+        if [[ "$EXTERNAL_CONFIG" =~ ^https?:// ]]; then
+            if command -v curl &>/dev/null; then
+                if curl -fsSL "$EXTERNAL_CONFIG" -o "$config_dest" 2>/dev/null; then
+                    chmod 644 "$config_dest"
+                    success "Configuracao baixada de URL externa"
+                else
+                    warn "Falha ao baixar config de ${EXTERNAL_CONFIG} - usando template base"
+                    EXTERNAL_CONFIG=""
+                fi
+            elif command -v wget &>/dev/null; then
+                if wget -qO "$config_dest" "$EXTERNAL_CONFIG" 2>/dev/null; then
+                    chmod 644 "$config_dest"
+                    success "Configuracao baixada de URL externa"
+                else
+                    warn "Falha ao baixar config de ${EXTERNAL_CONFIG} - usando template base"
+                    EXTERNAL_CONFIG=""
+                fi
+            else
+                warn "Nem curl nem wget disponiveis - usando template base"
+                EXTERNAL_CONFIG=""
+            fi
+        elif [[ -f "$EXTERNAL_CONFIG" ]]; then
+            install -m 644 "$EXTERNAL_CONFIG" "$config_dest"
+            success "Configuracao copiada de ${EXTERNAL_CONFIG}"
+        else
+            warn "Config externo nao encontrado: ${EXTERNAL_CONFIG} - usando template base"
+            EXTERNAL_CONFIG=""
+        fi
+        # Se falhou, cai no else abaixo na proxima verificacao
+        [[ -f "$config_dest" ]] && return 0
     elif [[ -f "${REPO_DIR}/devs_permissions.conf" ]]; then
         install -m 644 "${REPO_DIR}/devs_permissions.conf" "$config_dest"
         success "Configuracao instalada de ${REPO_DIR}/devs_permissions.conf"
@@ -382,6 +426,9 @@ install_config() {
 # DevOps Permissions Manager - Configuracao
 # Gerado automaticamente pelo auto-install.sh
 #===============================================================================
+
+# Nome da organizacao (exibido no dashboard e logs)
+ORG_NAME="DevOps Team"
 
 # Ambiente: development, staging, production
 ENVIRONMENT="production"
@@ -717,6 +764,7 @@ show_help() {
     echo "  (sem opcoes)       Instala tudo (dependencias + cockpit + plugin + CLI)"
     echo "  --uninstall        Remove o plugin (mantem config e dados)"
     echo "  --purge            Remove tudo incluindo config, dados, logs e backups"
+    echo "  --config URL|PATH  Usa config externo (ex: URL do GitLab privado)"
     echo "  -h, --help         Mostra esta ajuda"
     echo ""
     echo "EXEMPLOS:"
@@ -728,17 +776,31 @@ show_help() {
     echo "  cd cockpit"
     echo "  sudo bash auto-install.sh"
     echo ""
+    echo "  # Com config privado do GitLab interno:"
+    echo "  sudo bash auto-install.sh --config https://gitlab.local/devops/config.conf"
+    echo ""
+    echo "  # Pipe mode com config externo:"
+    echo "  curl -fsSL https://raw.githubusercontent.com/.../auto-install.sh | sudo bash -s -- --config /path/to/config.conf"
+    echo ""
 }
 
 ACTION="install"
 
-for arg in "$@"; do
-    case "$arg" in
-        --uninstall)  ACTION="uninstall" ;;
-        --purge)      ACTION="purge" ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --uninstall)  ACTION="uninstall"; shift ;;
+        --purge)      ACTION="purge"; shift ;;
+        --config)
+            if [[ -z "${2:-}" ]]; then
+                error "--config requer um argumento (URL ou path)"
+                exit 1
+            fi
+            EXTERNAL_CONFIG="$2"
+            shift 2
+            ;;
         -h|--help)    show_help; exit 0 ;;
         *)
-            error "Opcao desconhecida: $arg"
+            error "Opcao desconhecida: $1"
             echo "Use: $0 --help"
             exit 1
             ;;
