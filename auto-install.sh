@@ -30,7 +30,7 @@
 
 set -euo pipefail
 
-readonly SCRIPT_VERSION="1.0.0"
+readonly SCRIPT_VERSION="1.1.0"
 readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd 2>/dev/null || pwd)"
 
 # Detecta se esta sendo executado via pipe (curl | bash)
@@ -435,10 +435,11 @@ CONF
 create_cli_symlink() {
     header "Criando symlink CLI"
 
-    # Remove symlink antigo em /usr/local/bin/ se existir
-    [[ -L "/usr/local/bin/devs-permissions" ]] && rm -f "/usr/local/bin/devs-permissions"
-
+    # Cria symlink em /usr/bin/ (principal - sempre no PATH)
     ln -sf "${LIBEXEC_DIR}/devs_permissions_manager.sh" "$CLI_SYMLINK"
+
+    # Cria tambem em /usr/local/bin/ para compatibilidade com servidores que ja usavam
+    ln -sf "${LIBEXEC_DIR}/devs_permissions_manager.sh" "/usr/local/bin/devs-permissions"
 
     if [[ -x "$CLI_SYMLINK" ]]; then
         success "CLI disponivel como: devs-permissions"

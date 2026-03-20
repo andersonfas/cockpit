@@ -6,9 +6,9 @@
 #         DESCRIÇÃO: Gerenciador Enterprise de Permissões para Desenvolvedores
 #                    Sistema completo de controle de acesso a Docker, logs e configs
 #
-#          VERSÃO: 5.0.0 (Production Ready)
+#          VERSÃO: 5.1.0 (Production Ready)
 #          CRIADO: 2025-01-23
-#      ATUALIZADO: 2026-01-28
+#      ATUALIZADO: 2026-03-18
 #         AMBIENTE: RHEL/CentOS/Rocky Linux 8+, Ubuntu 20.04+
 #
 #           EQUIPE: DevOps - DETRAN-CE
@@ -50,7 +50,7 @@ trap 'error_handler $LINENO "$BASH_COMMAND"' ERR
 # CONSTANTES GLOBAIS (readonly)
 #===============================================================================
 readonly SCRIPT_NAME="${0##*/}"
-readonly SCRIPT_VERSION="5.0.0"
+readonly SCRIPT_VERSION="5.1.0"
 readonly _SCRIPT_SOURCE="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
 readonly SCRIPT_DIR="$(cd "$(dirname "$_SCRIPT_SOURCE")" && pwd)"
 readonly SCRIPT_PID=$$
