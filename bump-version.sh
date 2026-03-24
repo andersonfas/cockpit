@@ -8,20 +8,18 @@
 #    ./bump-version.sh minor    # 5.1.0 -> 5.2.0 (nova feature)
 #    ./bump-version.sh major    # 5.1.0 -> 6.0.0 (breaking change)
 #    ./bump-version.sh show     # mostra versões atuais
-#
-#  Nota: manifest.json NÃO é bumped - seu campo "version" é a API version
-#        do Cockpit (inteiro), não a versão do plugin.
 #===============================================================================
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Componentes e seus arquivos
+# Arquivos e seus padrões de versão
 MANAGER_SH="$SCRIPT_DIR/devs_permissions_manager.sh"
 AUTO_INSTALL_SH="$SCRIPT_DIR/auto-install.sh"
 HELPER_SH="$SCRIPT_DIR/devs-permissions-cockpit/bridge/cockpit-helper.sh"
 PLUGIN_JS="$SCRIPT_DIR/devs-permissions-cockpit/src/devs-permissions.js"
+MANIFEST_JSON="$SCRIPT_DIR/devs-permissions-cockpit/src/manifest.json"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -30,45 +28,25 @@ BLUE='\033[0;34m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-ERRORS=0
-
 #===============================================================================
 # Funções de versão
 #===============================================================================
 
 get_version() {
     local file="$1" pattern="$2"
-    if [[ ! -f "$file" ]]; then
-        echo ""
-        return
-    fi
-    grep -oP "$pattern" "$file" 2>/dev/null | head -1 || echo ""
-}
-
-validate_semver() {
-    local version="$1"
-    if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo -e "  ${RED}ERROR${NC} Versão inválida: '$version' (esperado: X.Y.Z)" >&2
-        return 1
-    fi
+    grep -oP "$pattern" "$file" 2>/dev/null | head -1
 }
 
 bump_semver() {
     local version="$1" type="$2"
     local major minor patch
-
-    if ! validate_semver "$version"; then
-        return 1
-    fi
-
-    local old_ifs="$IFS"
     IFS='.' read -r major minor patch <<< "$version"
-    IFS="$old_ifs"
 
     case "$type" in
         major) echo "$((major + 1)).0.0" ;;
         minor) echo "${major}.$((minor + 1)).0" ;;
         patch) echo "${major}.${minor}.$((patch + 1))" ;;
+        *) echo "$version" ;;
     esac
 }
 
@@ -77,36 +55,15 @@ update_file() {
 
     if [[ ! -f "$file" ]]; then
         echo -e "  ${RED}SKIP${NC} $label - arquivo não encontrado: $file"
-        ERRORS=$((ERRORS + 1))
         return 1
     fi
 
-    if ! grep -qF "$old" "$file"; then
-        echo -e "  ${YELLOW}WARN${NC} $label: padrão '$old' não encontrado"
-        ERRORS=$((ERRORS + 1))
-        return 1
-    fi
-
-    # Cria backup antes de editar
-    cp "$file" "${file}.bak"
-
-    if sed -i "s|${old}|${new}|g" "$file"; then
-        # Verifica se a substituição realmente aconteceu
-        if grep -qF "$new" "$file"; then
-            rm -f "${file}.bak"
-            echo -e "  ${GREEN}OK${NC}   $label: $old -> ${BOLD}$new${NC}"
-            return 0
-        else
-            # Restaura backup se sed não fez a substituição
-            mv "${file}.bak" "$file"
-            echo -e "  ${RED}FAIL${NC} $label: substituição não efetivada"
-            ERRORS=$((ERRORS + 1))
-            return 1
-        fi
+    if grep -qF "$old" "$file"; then
+        sed -i "s|$old|$new|g" "$file"
+        echo -e "  ${GREEN}OK${NC}   $label: $old -> ${BOLD}$new${NC}"
+        return 0
     else
-        mv "${file}.bak" "$file"
-        echo -e "  ${RED}FAIL${NC} $label: erro no sed"
-        ERRORS=$((ERRORS + 1))
+        echo -e "  ${YELLOW}WARN${NC} $label: padrão '$old' não encontrado em $file"
         return 1
     fi
 }
@@ -120,6 +77,7 @@ get_current_versions() {
     INSTALLER_VER=$(get_version "$AUTO_INSTALL_SH" '(?<=SCRIPT_VERSION=")[0-9]+\.[0-9]+\.[0-9]+')
     HELPER_VER=$(get_version "$HELPER_SH" '(?<=HELPER_VERSION=")[0-9]+\.[0-9]+\.[0-9]+')
     PLUGIN_VER=$(get_version "$PLUGIN_JS" '(?<=Versao: )[0-9]+\.[0-9]+\.[0-9]+')
+    MANIFEST_VER=$(get_version "$MANIFEST_JSON" '(?<="version": ")[0-9]+\.[0-9]+\.[0-9]+')
 }
 
 show_versions() {
@@ -130,6 +88,7 @@ show_versions() {
     echo -e "  ${BLUE}Installer${NC}    (auto-install.sh):              ${BOLD}v${INSTALLER_VER:-?}${NC}"
     echo -e "  ${BLUE}Helper${NC}       (cockpit-helper.sh):            ${BOLD}v${HELPER_VER:-?}${NC}"
     echo -e "  ${BLUE}Plugin JS${NC}    (devs-permissions.js):          ${BOLD}v${PLUGIN_VER:-?}${NC}"
+    echo -e "  ${BLUE}Manifest${NC}     (manifest.json):                ${BOLD}v${MANIFEST_VER:-?}${NC}"
     echo ""
 }
 
@@ -139,28 +98,15 @@ show_versions() {
 
 do_bump() {
     local bump_type="$1"
-    ERRORS=0
 
     get_current_versions
 
-    # Valida que conseguiu ler todas as versões
-    local missing=false
-    for var in MANAGER_VER INSTALLER_VER HELPER_VER PLUGIN_VER; do
-        if [[ -z "${!var}" ]]; then
-            echo -e "${RED}ERROR${NC} Não foi possível ler versão: $var"
-            missing=true
-        fi
-    done
-    if [[ "$missing" == true ]]; then
-        echo -e "\n${RED}Abortando bump. Corrija os erros acima.${NC}"
-        exit 1
-    fi
-
-    local new_manager new_installer new_helper new_plugin
-    new_manager=$(bump_semver "$MANAGER_VER" "$bump_type") || exit 1
-    new_installer=$(bump_semver "$INSTALLER_VER" "$bump_type") || exit 1
-    new_helper=$(bump_semver "$HELPER_VER" "$bump_type") || exit 1
-    new_plugin=$(bump_semver "$PLUGIN_VER" "$bump_type") || exit 1
+    local new_manager new_installer new_helper new_plugin new_manifest
+    new_manager=$(bump_semver "$MANAGER_VER" "$bump_type")
+    new_installer=$(bump_semver "$INSTALLER_VER" "$bump_type")
+    new_helper=$(bump_semver "$HELPER_VER" "$bump_type")
+    new_plugin=$(bump_semver "$PLUGIN_VER" "$bump_type")
+    new_manifest=$(bump_semver "$MANIFEST_VER" "$bump_type")
 
     echo -e "\n${BOLD}=== Version Bump: ${bump_type} ===${NC}\n"
 
@@ -193,21 +139,21 @@ do_bump() {
         "Versao: ${new_plugin}" \
         "Plugin JS header"
 
+    # Manifest
+    update_file "$MANIFEST_JSON" \
+        "\"version\": \"${MANIFEST_VER}\"" \
+        "\"version\": \"${new_manifest}\"" \
+        "Manifest version"
+
     # Atualiza data no header do manager
     local today
     today=$(date +%Y-%m-%d)
     if grep -q "ATUALIZADO:" "$MANAGER_SH"; then
-        cp "$MANAGER_SH" "${MANAGER_SH}.bak"
         sed -i "s|ATUALIZADO:.*|ATUALIZADO: ${today}|" "$MANAGER_SH"
-        rm -f "${MANAGER_SH}.bak"
         echo -e "  ${GREEN}OK${NC}   Manager ATUALIZADO: ${today}"
     fi
 
-    if [[ $ERRORS -gt 0 ]]; then
-        echo -e "\n${YELLOW}Concluído com ${ERRORS} aviso(s).${NC}"
-    else
-        echo -e "\n${GREEN}${BOLD}Versões atualizadas com sucesso!${NC}"
-    fi
+    echo -e "\n${GREEN}${BOLD}Versões atualizadas com sucesso!${NC}\n"
 
     show_versions
 
@@ -234,14 +180,6 @@ case "${1:-show}" in
         echo "  ./bump-version.sh minor    Feature (5.1.0 -> 5.2.0)"
         echo "  ./bump-version.sh major    Breaking (5.1.0 -> 6.0.0)"
         echo "  ./bump-version.sh show     Mostra versões atuais"
-        echo ""
-        echo "Componentes atualizados:"
-        echo "  - devs_permissions_manager.sh (SCRIPT_VERSION + header)"
-        echo "  - auto-install.sh (SCRIPT_VERSION)"
-        echo "  - cockpit-helper.sh (HELPER_VERSION)"
-        echo "  - devs-permissions.js (Versao header)"
-        echo ""
-        echo "Nota: manifest.json NÃO é alterado (campo 'version' é API version do Cockpit)"
         echo ""
         ;;
     *)
